@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "start": "22:00",
+  "end": "07:00",
+  "domains": [
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "chatgpt.com",
+    "www.chatgpt.com"
+  ]
+}
