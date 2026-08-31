@@ -1,145 +1,167 @@
-let item,
-  item2,
-  item3,
-  item4,
-  item5,
-  item6,
-  related,
-  homeFeed,
-  scrollContainer,
-  homeFeedIronSelector,
-  youtubeLogo,
-  shorts,
-  commentSection,
-  liveChat,
-  ad;
-async function doSomething() {
-  item = await chrome.storage.sync.get(["homeFeed"]);
-  item2 = await chrome.storage.sync.get(["recommendedVideos"]);
-  item3 = await chrome.storage.sync.get(["shorts"]);
-  item4 = await chrome.storage.sync.get(["commentSection"]);
-  item5 = await chrome.storage.sync.get(["liveChat"]);
-  item6 = await chrome.storage.sync.get(["ad"]);
-}
-doSomething();
+(() => {
+  "use strict";
 
-youtubeLogo = document.getElementById("logo-icon");
-youtubeLogo.addEventListener("click", () => {
-  window.location = "https://www.youtube.com/";
-});
+  const STYLE_ID = "untrapped-focus-mode";
 
-chrome.runtime.onMessage.addListener(gotMessage);
+  // YouTube is a single-page app and frequently replaces DOM nodes. The old
+  // implementation hid a handful of elements once, so YouTube could simply
+  // recreate them after navigation. Focus mode uses persistent CSS selectors
+  // plus a MutationObserver so the rules survive SPA navigation and lazy load.
+  const FOCUS_CSS = `
+    /* Recommendations and discovery feeds */
+    #related,
+    #secondary ytd-watch-next-secondary-results-renderer,
+    ytd-watch-next-secondary-results-renderer,
+    ytd-compact-video-renderer,
+    ytd-video-with-context-renderer,
+    ytd-reel-shelf-renderer,
+    ytd-rich-shelf-renderer,
+    ytd-horizontal-card-list-renderer,
+    ytd-shelf-renderer[is-shorts],
+    ytd-shorts,
+    ytd-shorts-shelf-renderer,
+    ytd-rich-section-renderer:has(ytd-reel-shelf-renderer),
+    ytd-browse[page-subtype="home"] ytd-rich-grid-renderer,
+    ytd-browse[page-subtype="trending"] ytd-rich-grid-renderer,
 
-function gotMessage(message, sender, sendResponse) {
-  performAction(message.text);
-}
+    /* Home / discovery / social navigation */
+    ytd-browse[page-subtype="home"] #primary,
+    ytd-browse[page-subtype="trending"] #primary,
+    ytd-guide-entry-renderer[role="tab"][href^="/feed/explore"],
+    ytd-guide-entry-renderer[role="tab"][href^="/feed/trending"],
+    ytd-guide-entry-renderer[role="tab"][href^="/shorts"],
+    ytd-guide-entry-renderer[role="tab"][href^="/feed/subscriptions"],
+    ytd-mini-guide-entry-renderer[aria-label="Shorts"],
+    ytd-mini-guide-entry-renderer[aria-label="Trending"],
+    ytd-mini-guide-entry-renderer[aria-label="Subscriptions"],
 
-async function performAction(message) {
-  if (message === "hideRecommendedVideos") {
-    related = document.getElementById("related");
-    related.style["visibility"] = "hidden";
-  } else if (message === "showRecommendedVideos") {
-    related = document.getElementById("related");
-    related.style["visibility"] = "visible";
-  } else if (message === "hideHomeFeed") {
-    homeFeed = document.getElementById("contents");
-    scrollContainer = document.getElementById("chips-wrapper");
-    homeFeed.style["display"] = "none";
-    scrollContainer.style["display"] = "none";
-  } else if (message === "showHomeFeed") {
-    homeFeed = document.getElementById("contents");
-    scrollContainer = document.getElementById("chips-wrapper");
-    homeFeed.style["display"] = "";
-    scrollContainer.style["display"] = "";
-  } else if (message === "hideShorts") {
-    shorts = document.querySelector("[title='Shorts']");
-    shorts.style["display"] = "none";
-  } else if (message === "showShorts") {
-    shorts = document.querySelector("[title='Shorts']");
-    shorts.style["display"] = "";
-  } else if (message == "showCommentSection") {
-    commentSection = document.getElementById("comments");
-    commentSection.style["display"] = "";
-  } else if (message == "hideCommentSection") {
-    commentSection = document.getElementById("comments");
-    commentSection.style["display"] = "none";
-  } else if (message == "hideLiveChat") {
-    liveChat = document.getElementById("chat");
-    liveChat.style["display"] = "none";
-  } else if (message == "showLiveChat") {
-    liveChat = document.getElementById("chat");
-    liveChat.style["display"] = "";
-  } else if (message == "showAd") {
-    ad = document.querySelectorAll("#masthead-ad");
-    ad.forEach(function (ele) {
-      ele.style["display"] = "";
-    });
-  } else if (message == "hideAd") {
-    ad = document.querySelectorAll("#masthead-ad");
-    ad.forEach(function (ele) {
-      ele.style["display"] = "none";
-    });
-  } else if (message === "hello") {
-    await doSomething();
-    // declaring variables to store each element
-    related = document.getElementById("related");
-    homeFeed = document.getElementById("contents");
-    scrollContainer = document.getElementById("chips-wrapper");
-    youtubeLogo = document.querySelector("#logo-icon");
-    shorts = document.querySelector("[title='Shorts']");
-    commentSection = document.getElementById("comments");
-    liveChat = document.getElementById("chat");
-    ad = document.querySelectorAll("#masthead-ad");
+    /* Comments and live interaction */
+    #comments,
+    #chat,
+    ytd-comments,
+    ytd-live-chat-frame,
+    ytd-live-chat-renderer,
 
-    // check if the page has a homefeed
-    if (item && item.homeFeed && homeFeed !== null) {
-      // set the visibility of home page to hidden
-      homeFeed.style["display"] = "none";
-      homeFeed = null;
+    /* End-screen / in-player recommendations */
+    .ytp-endscreen-content,
+    .ytp-ce-element,
+    .ytp-ce-video,
+    .ytp-autonav-endscreen-upnext-container,
+    .ytp-autonav-endscreen-upnext-header,
+    .ytp-suggestion-set,
+
+    /* Engagement prompts */
+    ytd-subscribe-button-renderer,
+    ytd-video-owner-renderer #subscribe-button,
+    #notification-preference-toggle-button,
+
+    /* Shorts injected dynamically */
+    a[href^="/shorts/"],
+    ytd-reel-item-renderer,
+
+    /* Ads / promotional distractions */
+    #masthead-ad,
+    ytd-ad-slot-renderer,
+    ytd-display-ad-renderer,
+    ytd-promoted-sparkles-web-renderer,
+    ytd-in-feed-ad-layout-renderer,
+    ytd-action-companion-ad-renderer,
+    .ytp-ad-module,
+    .ytp-ad-overlay-container,
+    .ytp-ad-text-overlay,
+    #player-ads,
+
+    /* Autoplay UI */
+    .ytp-autonav-toggle-button-container,
+    ytd-compact-autoplay-renderer {
+      display: none !important;
+      visibility: hidden !important;
     }
 
-    if (item && item.homeFeed && scrollContainer !== null) {
-      // set the display property of scroll container to none
-      scrollContainer.style["display"] = "none";
-      scrollContainer = null;
+    /* On watch pages remove the recommendation column completely. */
+    ytd-watch-flexy[is-two-columns_] #secondary {
+      display: none !important;
     }
 
-    if (youtubeLogo !== null) {
-      youtubeLogo.innerHTML =
-        '<img src = "https://raw.githubusercontent.com/KishanKokal/Untrapped/89f2281ee2f6f936d9eb831d065ab436cd785675/untrapped.svg" width = "100px"></img>';
-      youtubeLogo = null;
+    ytd-watch-flexy[is-two-columns_] #primary {
+      width: 100% !important;
+      max-width: 100% !important;
     }
+  `;
 
-    // check if the page has a side bar
-    if (item2 && item2.recommendedVideos && related !== null) {
-      // set the visibility of side bar to hidden
-      related.style["visibility"] = "hidden";
-      related = null;
+  function installFocusStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = FOCUS_CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function disableAutoplay() {
+    // YouTube exposes autoplay state on the player toggle. Only click when
+    // autoplay is currently enabled, so we never toggle it back on.
+    const button = document.querySelector(
+      ".ytp-autonav-toggle-button[aria-checked='true'], " +
+      ".ytp-autonav-toggle-button[aria-pressed='true']"
+    );
+    if (button) {
+      try {
+        button.click();
+      } catch (_) {
+        // Ignore player lifecycle races.
+      }
     }
+  }
 
-    if (item4 && item4.commentSection && commentSection !== null) {
-      commentSection.style["display"] = "none";
-      commentSection = null;
-    }
+  function markTransientNodes() {
+    const selectors = [
+      "#related",
+      "#comments",
+      "#chat",
+      "#masthead-ad",
+      ".ytp-endscreen-content",
+      ".ytp-ce-element",
+      ".ytp-autonav-endscreen-upnext-container",
+    ];
 
-    if (item5 && item5.liveChat && liveChat !== null) {
-      liveChat.style["display"] = "none";
-      liveChat = null;
-    }
-
-    if (item6 && item6.ad && ad !== null) {
-      ad = document.querySelectorAll("#masthead-ad");
-      ad.forEach(function (ele) {
-        ele.style["display"] = "none";
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((node) => {
+        node.setAttribute("data-untrapped-hidden", "true");
       });
     }
 
-    if (item3 && item3.shorts && shorts !== null) {
-      // set the visibility of side bar to hidden
-      shorts.style["display"] = "none";
-      shorts = null;
-    }
+    disableAutoplay();
   }
-}
 
-performAction("hello");
+  function start() {
+    installFocusStyle();
+    markTransientNodes();
+
+    // YouTube navigates without full page reloads. Batch mutations so this
+    // stays lightweight while still catching newly inserted recommendation UI.
+    let scheduled = false;
+    const observer = new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        installFocusStyle();
+        markTransientNodes();
+      });
+    });
+
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+
+    window.addEventListener("yt-navigate-finish", markTransientNodes);
+    window.addEventListener("popstate", markTransientNodes);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
+})();
