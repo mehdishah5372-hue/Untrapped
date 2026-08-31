@@ -14,4 +14,4 @@ $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccou
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($logon, $startup, $repeat) -Principal $principal -Force | Out-Null
 Write-Host "Installed: $TaskName"
 Write-Host "Schedule is controlled by ultra-mode/config.json"
-Write-Host "Default: 22:00-07:00"
+Write-Host "Default: 05:00-23:00"
