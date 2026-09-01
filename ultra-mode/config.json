@@ -4,17 +4,20 @@
   "end": "23:00",
   "domains": [
     "youtube.com",
-    "www.youtube.com",
-    "m.youtube.com",
-    "music.youtube.com",
+    "*.youtube.com",
+    "youtu.be",
+    "*.youtu.be",
     "youtube-nocookie.com",
+    "*.youtube-nocookie.com",
     "youtubei.googleapis.com",
     "youtube.googleapis.com",
     "googlevideo.com",
+    "*.googlevideo.com",
     "ytimg.com",
+    "*.ytimg.com",
     "chatgpt.com",
-    "www.chatgpt.com",
+    "*.chatgpt.com",
     "crushon.ai",
-    "www.crushon.ai"
+    "*.crushon.ai"
   ]
 }
