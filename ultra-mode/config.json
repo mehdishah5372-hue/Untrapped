@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "start": "00:00",
-  "end": "00:00",
+  "start": "05:00",
+  "end": "22:00",
   "domains": [
     "youtube.com",
     "*.youtube.com",
