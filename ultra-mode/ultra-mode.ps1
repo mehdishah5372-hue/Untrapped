@@ -1,13 +1,14 @@
 # Untrapped Ultra Mode — Windows local enforcement
-# Run as Administrator/SYSTEM. Blocks configured domains during the scheduled window.
+# Runs as SYSTEM and enforces configured domain blocks independently of the browser extension.
 # A valid, unexpired signed override may temporarily suspend the block.
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $HostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-$PublicKeyPath = Join-Path $env:USERPROFILE 'Untrapped-Ultra-Key\ultra-public.json'
+$PublicKeyPath = Join-Path $env:ProgramData 'Untrapped-Ultra\ultra-public.json'
+if (-not (Test-Path $PublicKeyPath)) { $PublicKeyPath = Join-Path $env:USERPROFILE 'Untrapped-Ultra-Key\ultra-public.json' }
 if (-not (Test-Path $PublicKeyPath)) { $PublicKeyPath = Join-Path $Root 'ultra-public.json' }
-$OverridePath = Join-Path $Root 'override-until.txt'
+$OverridePath = Join-Path $env:ProgramData 'Untrapped-Ultra\override.json'
 $StartMarker = '# >>> UNTRAPPED ULTRA MODE >>>'
 $EndMarker = '# <<< UNTRAPPED ULTRA MODE <<<'
 
