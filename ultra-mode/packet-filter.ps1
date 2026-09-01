@@ -1,93 +1,158 @@
-# Untrapped Ultra Mode — Windows Firewall destination blocker
-# Uses RemoteAddress rules rather than WinDivert. This avoids the previous
-# FQDN/packet-inspection problem while leaving Brave itself untouched.
-# Run from an elevated PowerShell window.
+# Untrapped Ultra Mode — WinDivert packet-level destination blocker
+# Uses WinDivert's kernel packet filter with DROP, so blocked HTTPS traffic is
+# discarded before it can be carried through a user-space VPN tunnel.
+# Run from an elevated PowerShell session or as the SYSTEM scheduled task.
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$config = Get-Content (Join-Path $root 'config.json') -Raw | ConvertFrom-Json
-$rulePrefix = 'Untrapped Ultra Mode - YouTube IP - '
-$domains = @(
-  'youtube.com',
-  'www.youtube.com',
-  'm.youtube.com',
-  'music.youtube.com',
-  'youtube-nocookie.com',
-  'youtubei.googleapis.com',
-  'youtube.googleapis.com',
-  'googlevideo.com'
-)
 
-function Test-UltraActive {
-  $start = [TimeSpan]::Parse($config.start)
-  $end   = [TimeSpan]::Parse($config.end)
-  $now   = (Get-Date).TimeOfDay
-  if ($start -eq $end) { return $true }
-  if ($start -lt $end) { return ($now -ge $start -and $now -lt $end) }
-  return ($now -ge $start -or $now -lt $end)
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ConfigPath = Join-Path $Root 'config.json'
+$DllPath = Join-Path $Root 'WinDivert.dll'
+$RefreshSeconds = 30
+$Priority = 1000
+$LayerNetwork = 0
+$FlagDrop = 0x0002
+$InvalidHandle = [IntPtr](-1)
+
+if (-not (Test-Path $DllPath)) {
+    throw "WinDivert.dll not found at $DllPath. Run INSTALL-PACKET-FILTER.ps1 first."
+}
+if (-not (Test-Path (Join-Path $Root 'WinDivert64.sys'))) {
+    throw "WinDivert64.sys not found in $Root. Run INSTALL-PACKET-FILTER.ps1 first."
 }
 
-function Get-BlockedIPs {
-  $set = [System.Collections.Generic.HashSet[string]]::new()
-  foreach ($domain in $domains) {
-    foreach ($type in @('A','AAAA')) {
-      try {
-        Resolve-DnsName -Name $domain -Type $type -ErrorAction Stop |
-          ForEach-Object { if ($_.IPAddress) { [void]$set.Add($_.IPAddress) } }
-      } catch { }
+Set-Location $Root
+
+if (-not ('UntrappedWinDivert.Native' -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace UntrappedWinDivert {
+    public static class Native {
+        [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+        public static extern bool SetDllDirectory(string lpPathName);
+
+        [DllImport("WinDivert.dll", CallingConvention=CallingConvention.Cdecl,
+            CharSet=CharSet.Ansi, SetLastError=true)]
+        public static extern IntPtr WinDivertOpen(
+            string filter, int layer, short priority, ulong flags);
+
+        [DllImport("WinDivert.dll", CallingConvention=CallingConvention.Cdecl,
+            SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool WinDivertClose(IntPtr handle);
     }
-  }
-  return @($set)
+}
+"@
 }
 
-function Remove-UltraRules {
-  Get-NetFirewallRule -DisplayName "$rulePrefix*" -ErrorAction SilentlyContinue |
-    Remove-NetFirewallRule -ErrorAction SilentlyContinue
+[UntrappedWinDivert.Native]::SetDllDirectory($Root) | Out-Null
+
+function Get-Config {
+    if (-not (Test-Path $ConfigPath)) { throw "Missing config.json at $ConfigPath" }
+    Get-Content $ConfigPath -Raw | ConvertFrom-Json
 }
 
-function Install-UltraRules {
-  Remove-UltraRules
-  $ips = Get-BlockedIPs
-  if ($ips.Count -eq 0) { throw 'Could not resolve any configured YouTube destinations.' }
+function Get-BlockedIPs($config) {
+    $set = [System.Collections.Generic.HashSet[string]]::new()
+    $domains = @($config.domains | Where-Object {
+        $_ -and $_.ToString() -notmatch '[\s#]' -and $_.ToString() -notmatch '^\*\.'
+    })
 
-  $i = 0
-  foreach ($ip in $ips) {
-    $i++
-    New-NetFirewallRule `
-      -DisplayName ($rulePrefix + $i) `
-      -Direction Outbound `
-      -Action Block `
-      -Profile Any `
-      -Protocol Any `
-      -RemoteAddress $ip `
-      -Description "Untrapped Ultra Mode: block YouTube destination $ip" |
-      Out-Null
-  }
-  Write-Host "Ultra Mode Windows Firewall block ACTIVE: $($ips.Count) destination IPs."
+    foreach ($domain in $domains) {
+        foreach ($type in @('A','AAAA')) {
+            try {
+                Resolve-DnsName -Name $domain -Type $type -DnsOnly -ErrorAction Stop |
+                    ForEach-Object {
+                        if ($_.IPAddress) { [void]$set.Add($_.IPAddress) }
+                    }
+            } catch { }
+        }
+    }
+    @($set)
 }
 
-$active = $false
+function Test-UltraActive($config) {
+    if (-not [bool]$config.enabled) { return $false }
+    $start = [TimeSpan]::Parse($config.start)
+    $end = [TimeSpan]::Parse($config.end)
+    $now = (Get-Date).TimeOfDay
+    if ($start -eq $end) { return $true }
+    if ($start -lt $end) { return ($now -ge $start -and $now -lt $end) }
+    ($now -ge $start -or $now -lt $end)
+}
+
+function New-WinDivertFilter($ips) {
+    $clauses = foreach ($ip in $ips) {
+        try {
+            $parsed = [System.Net.IPAddress]::Parse($ip)
+            if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                "ip.DstAddr == $ip"
+            } else {
+                "ipv6.DstAddr == $ip"
+            }
+        } catch { }
+    }
+
+    if (-not $clauses -or @($clauses).Count -eq 0) { return $null }
+
+    # HTTPS is the transport we need to stop. This covers TCP/TLS and UDP/QUIC
+    # while leaving unrelated traffic to the same IP alone.
+    "outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443) and (" +
+        (($clauses | ForEach-Object { "($_)" }) -join ' or ') + ")"
+}
+
+$handle = $InvalidHandle
+$lastFilter = $null
+
 try {
-  Write-Host "Untrapped Ultra Mode firewall service. Schedule $($config.start)-$($config.end)."
-  while ($true) {
-    $shouldBeActive = [bool]($config.enabled) -and (Test-UltraActive)
+    Write-Host 'Untrapped Ultra Mode WinDivert service starting.'
+    while ($true) {
+        $config = Get-Config
+        $active = Test-UltraActive $config
 
-    if ($shouldBeActive -and -not $active) {
-      Install-UltraRules
-      $active = $true
-    }
-    elseif (-not $shouldBeActive -and $active) {
-      Remove-UltraRules
-      $active = $false
-      Write-Host 'Ultra Mode Windows Firewall block INACTIVE.'
-    }
-    elseif ($shouldBeActive -and $active) {
-      # Refresh periodically because Google/CDN destination addresses change.
-      Install-UltraRules
-    }
+        if (-not $active) {
+            if ($handle -ne $InvalidHandle) {
+                [UntrappedWinDivert.Native]::WinDivertClose($handle) | Out-Null
+                $handle = $InvalidHandle
+                $lastFilter = $null
+                Write-Host 'WinDivert block INACTIVE.'
+            }
+            Start-Sleep -Seconds $RefreshSeconds
+            continue
+        }
 
-    Start-Sleep -Seconds 30
-  }
+        $ips = @(Get-BlockedIPs $config)
+        $filter = New-WinDivertFilter $ips
+
+        if (-not $filter) {
+            Write-Warning 'Ultra Mode is enabled but no blocked destination IPs could be resolved.'
+            Start-Sleep -Seconds $RefreshSeconds
+            continue
+        }
+
+        if ($filter -ne $lastFilter) {
+            if ($handle -ne $InvalidHandle) {
+                [UntrappedWinDivert.Native]::WinDivertClose($handle) | Out-Null
+                $handle = $InvalidHandle
+            }
+
+            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs."
+            $handle = [UntrappedWinDivert.Native]::WinDivertOpen($filter, $LayerNetwork, $Priority, [UInt64]$FlagDrop)
+            if ($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero) {
+                $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                throw "WinDivertOpen failed with Windows error $errorCode."
+            }
+
+            $lastFilter = $filter
+            Write-Host 'WinDivert packet block ACTIVE.'
+        }
+
+        Start-Sleep -Seconds $RefreshSeconds
+    }
 }
 finally {
-  if (-not (Test-UltraActive)) { Remove-UltraRules }
+    if ($handle -ne $InvalidHandle -and $handle -ne [IntPtr]::Zero) {
+        [UntrappedWinDivert.Native]::WinDivertClose($handle) | Out-Null
+    }
 }
