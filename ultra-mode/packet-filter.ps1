@@ -53,9 +53,9 @@ function Get-Config {
     Get-Content $ConfigPath -Raw | ConvertFrom-Json
 }
 
-function Get-BlockedIPs($config) {
+function Get-DomainIPs($domains) {
     $set = [System.Collections.Generic.HashSet[string]]::new()
-    $domains = @($config.domains | Where-Object {
+    $domains = @($domains | Where-Object {
         $_ -and $_.ToString() -notmatch '[\s#]' -and $_.ToString() -notmatch '^\*\.'
     })
 
@@ -111,22 +111,21 @@ try {
         $config = Get-Config
         $active = Test-UltraActive $config
 
-        if (-not $active) {
+        # Normal domains follow the configured schedule. Domains in
+        # alwaysBlockedDomains are blocked regardless of the current time.
+        $scheduledDomains = if ($active) { @($config.domains) } else { @() }
+        $alwaysBlockedDomains = @($config.alwaysBlockedDomains)
+        $domainsToBlock = @($scheduledDomains + $alwaysBlockedDomains)
+        $ips = @(Get-DomainIPs $domainsToBlock)
+        $filter = New-WinDivertFilter $ips
+
+        if (-not $filter) {
             if ($handle -ne $InvalidHandle) {
                 [UntrappedWinDivert.Native]::WinDivertClose($handle) | Out-Null
                 $handle = $InvalidHandle
                 $lastFilter = $null
                 Write-Host 'WinDivert block INACTIVE.'
             }
-            Start-Sleep -Seconds $RefreshSeconds
-            continue
-        }
-
-        $ips = @(Get-BlockedIPs $config)
-        $filter = New-WinDivertFilter $ips
-
-        if (-not $filter) {
-            Write-Warning 'Ultra Mode is enabled but no blocked destination IPs could be resolved.'
             Start-Sleep -Seconds $RefreshSeconds
             continue
         }
@@ -145,7 +144,11 @@ try {
             }
 
             $lastFilter = $filter
-            Write-Host 'WinDivert packet block ACTIVE.'
+            if ($alwaysBlockedDomains.Count -gt 0) {
+                Write-Host 'WinDivert packet block ACTIVE (scheduled domains + always-blocked domains).'
+            } else {
+                Write-Host 'WinDivert packet block ACTIVE.'
+            }
         }
 
         Start-Sleep -Seconds $RefreshSeconds
