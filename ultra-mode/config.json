@@ -16,7 +16,9 @@
     "ytimg.com",
     "*.ytimg.com",
     "chatgpt.com",
-    "*.chatgpt.com",
+    "*.chatgpt.com"
+  ],
+  "alwaysBlockedDomains": [
     "crushon.ai",
     "*.crushon.ai"
   ]
