@@ -1,18 +1,20 @@
-# Install the WinDivert packet-filter dependency for Ultra Mode.
+# Install the Ultra Mode static firewall backstop as a SYSTEM task.
+# This version intentionally uses Windows Firewall instead of a third-party packet
+# interception driver. It covers IPv4/IPv6 and both TCP/443 and UDP/443.
 # Run this script as Administrator.
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
-$zip=Join-Path $root 'WinDivert-2.2.2-A.zip'
-$url='https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip'
-if(-not (Test-Path $zip)){Invoke-WebRequest -Uri $url -OutFile $zip}
-$tmp=Join-Path $env:TEMP ('Untrapped-WinDivert-'+[guid]::NewGuid())
-New-Item -ItemType Directory -Path $tmp | Out-Null
-Expand-Archive -Path $zip -DestinationPath $tmp -Force
-$dll=Get-ChildItem $tmp -Recurse -Filter 'WinDivert.dll' | Where-Object {$_.FullName -match '\\x64\\'} | Select-Object -First 1
-$sys=Get-ChildItem $tmp -Recurse -Filter 'WinDivert64.sys' | Select-Object -First 1
-if(-not $dll -or -not $sys){throw 'Could not locate the x64 WinDivert binaries in the downloaded package.'}
-Copy-Item $dll.FullName (Join-Path $root 'WinDivert.dll') -Force
-Copy-Item $sys.FullName (Join-Path $root 'WinDivert64.sys') -Force
-Remove-Item $tmp -Recurse -Force
-Write-Host 'WinDivert x64 installed into ultra-mode.'
-Write-Host 'Next run packet-filter.ps1 as Administrator.'
+$runner=Join-Path $root 'packet-filter.ps1'
+$taskName='Untrapped Ultra Mode Static Backstop'
+
+if(-not(Test-Path $runner)){throw "Missing $runner"}
+
+$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
+$startup=New-ScheduledTaskTrigger -AtStartup
+$principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $startup -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName $taskName
+
+Write-Host "Installed and started: $taskName"
+Write-Host 'The backstop refreshes blocked destination IPs every 60 seconds.'
+Write-Host 'It blocks TCP/443 and UDP/443 for all domains in config.json.'
