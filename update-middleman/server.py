@@ -1,8 +1,8 @@
-"""Untrapped Update Middleman 1.2.0.
+"""Untrapped Update Middleman 1.2.1.
 
 Canonical update broker. It exposes only explicitly allow-listed Untrapped artifacts,
 normalizes explicit source envelopes, computes SHA-256 hashes, and enforces the
-protected 1.0.0 baseline floor. It never changes a client machine.
+protected 1.0.0 baseline floor when an artifact declares a version. It never changes a client machine.
 """
 from __future__ import annotations
 import base64, hashlib, json, os, re, threading, time
@@ -60,7 +60,7 @@ def normalize(data: bytes, path: str):
     return data, False
 
 def fetch_upstream(path: str):
-    req = Request(UPSTREAM + path + "?middleman=" + str(time.time_ns()), headers={"User-Agent": "Untrapped-Update-Middleman/1.2"})
+    req = Request(UPSTREAM + path + "?middleman=" + str(time.time_ns()), headers={"User-Agent": "Untrapped-Update-Middleman/1.2.1"})
     with urlopen(req, timeout=30) as r:
         return r.read()
 
@@ -85,7 +85,7 @@ def build_manifest():
     return {"service": "Untrapped Update Middleman", "protocol": 1, "baseline": "1.0.0", "minimum_baseline": "1.0.0", "generated_at": int(time.time()), "cache_ttl": CACHE_TTL, "artifacts": entries}
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "UntrappedMiddleman/1.2"
+    server_version = "UntrappedMiddleman/1.2.1"
     def send_json(self, code, obj):
         body = json.dumps(obj, indent=2).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -102,8 +102,11 @@ class Handler(BaseHTTPRequestHandler):
                 if path not in ALLOW:
                     self.send_json(404, {"error": "artifact_not_allowlisted"}); return
                 native, normalized = get_artifact(path)
-                if path.endswith(".ps1") and version_of(native) < MIN_BASELINE:
-                    self.send_json(409, {"error": "baseline_downgrade_refused", "path": path}); return
+                declared_version = version_of(native)
+                # 0.0.0 means the artifact has no embedded version marker. These legacy
+                # artifacts are valid and must not be rejected merely for lacking metadata.
+                if path.endswith(".ps1") and declared_version != (0, 0, 0) and declared_version < MIN_BASELINE:
+                    self.send_json(409, {"error": "baseline_downgrade_refused", "path": path, "declared_version": ".".join(map(str, declared_version)), "minimum_baseline": "1.0.0"}); return
                 self.send_response(200); self.send_header("Content-Type", "application/octet-stream"); self.send_header("Cache-Control", "no-store"); self.send_header("X-Untrapped-SHA256", sha256(native)); self.send_header("X-Untrapped-Normalized", "true" if normalized else "false"); self.send_header("X-Untrapped-Baseline", "1.0.0"); self.send_header("X-Untrapped-Cache-TTL", str(CACHE_TTL)); self.send_header("Content-Length", str(len(native))); self.end_headers(); self.wfile.write(native); return
             self.send_json(404, {"error": "not_found"})
         except Exception as exc:
