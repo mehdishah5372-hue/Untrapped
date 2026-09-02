@@ -10,7 +10,6 @@ $OverridePath = Join-Path $Root 'override-until.txt'
 $UpdateUrl = 'https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/ultra-mode/status-untrapped.ps1'
 
 # Self-update: read-only with respect to Untrapped policy/networking.
-# The result is recorded in the final report so UAUD explains whether updating worked.
 $updateMarker = [Environment]::GetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','Process')
 $updateStatus = 'NOT CHECKED'
 $updateDetail = 'No update check has completed yet.'
@@ -74,12 +73,44 @@ function TestTarget443([string]$Name, [bool]$ExpectedBlocked) {
         else { Report ('[WARN ERROR] BLOCK TEST: ' + $Name + ' test error: ' + $_.Exception.Message); Problem ($Name + ' blocking test encountered an error while it should be allowed.') }
     }
 }
+function Test-GitHubAccess {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $response = Invoke-WebRequest -Uri 'https://github.com' -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+            Report ('[OK REACHABLE] GitHub: https://github.com accessible; HTTP ' + [string]$response.StatusCode)
+        } else {
+            Report ('[FAIL] GitHub: https://github.com returned HTTP ' + [string]$response.StatusCode)
+            Problem 'GitHub is reachable but returned an unexpected HTTP status.'
+        }
+    } catch {
+        Report ('[FAIL] GitHub: https://github.com is NOT accessible: ' + $_.Exception.Message)
+        Problem 'GitHub could not be accessed by the diagnostic.'
+    }
+}
 
 Report ''
 Report '============================================================'
 Report ' UNTRAPPED ULTRA MODE - READ-ONLY DIAGNOSTIC'
 Report '============================================================'
-Report ('Time: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
+$nowLocal = Get-Date
+Report ('Time: ' + $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Report ('Time zone: ' + [TimeZoneInfo]::Local.DisplayName + ' (' + [TimeZoneInfo]::Local.Id + ')')
+Report ('UTC time: ' + $nowLocal.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss ''UTC'''))
+Report ''
+Report 'CLOCK / TIME CHECK'
+Report '-----------------'
+Report ('[OK] System clock: ' + $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz'))
+try {
+    $utcNow = [DateTime]::UtcNow
+    $offset = [TimeZoneInfo]::Local.GetUtcOffset($utcNow)
+    Report ('[OK] Local UTC offset: ' + $offset.ToString())
+    if ($nowLocal -gt (Get-Date).AddSeconds(-5) -and $nowLocal -lt (Get-Date).AddSeconds(5)) { Report '[OK] Clock read: current system time is available.' }
+} catch { Report ('[FAIL ERROR] Clock check failed: ' + $_.Exception.Message); Problem 'System clock/time-zone check failed.' }
+Report ''
+Report 'GITHUB ACCESS CHECK'
+Report '------------------'
+Test-GitHubAccess
 Report ''
 Report 'SELF-UPDATE STATUS'
 Report '-----------------'
@@ -89,7 +120,6 @@ elseif ($updateStatus -eq 'UPDATE FAILED') { Report '[FAIL UPDATE FAILED] Diagno
 elseif ($updateStatus -eq 'UPDATE NOT APPLIED') { Report '[WARN UPDATE NOT APPLIED] A remote copy was found but was rejected by the update safety check.' }
 else { Report ('[WARN UPDATE STATUS] ' + $updateStatus) }
 Report ('  Details: ' + $updateDetail)
-Report '  What to do if update failed/unavailable: check that internet/GitHub access works, then run UAUD again. If it keeps failing, manually replace status-untrapped.ps1 with the official GitHub copy and rerun the diagnostic.'
 Report '  Self-update only updates this read-only diagnostic; it does NOT change policy, override state, firewall, WFP, DNS, routing, or VPN configuration.'
 Report ''
 foreach ($name in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1')) { CheckFile $name }
@@ -146,7 +176,7 @@ Report '[WARN]               Something unusual was detected, but it is not autom
 Report '[WARN UNRESOLVED]    DNS lookup failed; this may or may not affect Untrapped.'
 Report '[WARN DISABLED]      A feature/configuration is disabled.'
 Report '[WARN ENTRIES FOUND] Unexpected relevant entries were found.'
-Report '[WARN ERROR]        A diagnostic check itself encountered an error.'
+Report '[WARN ERROR]         A diagnostic check itself encountered an error.'
 Report '[WARN UPDATE UNAVAILABLE] GitHub update check failed; local diagnostic continues.'
 Report '[WARN UPDATE NOT APPLIED] A remote copy was found but the safety check rejected it.'
 Report '[FAIL UPDATE FAILED] Self-update could not complete; follow the SELF-UPDATE STATUS instructions above.'
@@ -165,5 +195,5 @@ Report '  Every UAUD run checks the official Untrapped GitHub copy.'
 Report '  If a newer copy is found, it replaces the local diagnostic and restarts it once.'
 Report '  If GitHub cannot be reached, the existing local diagnostic continues.'
 Report '  Auto-update does NOT change policy, override state, firewall, WFP, DNS, routing, or VPN configuration.'
-Report '============================================================'; Report 'NO POLICY CHANGES WERE MADE.'; Report '============================================================'
+Report ''; Report '============================================================'; Report 'NO POLICY CHANGES WERE MADE.'; Report '============================================================'
 try { $lines | Set-Content -Path $ReportPath -Encoding UTF8 -ErrorAction Stop; Report ('[OK] Diagnostic report saved to: ' + $ReportPath); Start-Process -FilePath 'notepad.exe' -ArgumentList $ReportPath -ErrorAction Stop } catch { Report ('[WARN ERROR] Could not save or open diagnostic report: ' + $_.Exception.Message) }
