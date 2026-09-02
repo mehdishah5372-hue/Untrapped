@@ -1,26 +1,112 @@
 # UAUD (Untrapped Auto-Update & Diagnostics) ver 1.0.0 - TRUE BASELINE
 # UAUD diagnoses and orchestrates. UARD repairs. Baseline 1.0.0 may only be retained or upgraded.
 $ErrorActionPreference='SilentlyContinue'
-$UAUDName='UAUD (Untrapped Auto-Update & Diagnostics)';$UAUDVersion='1.0.0';$UARDName='UARD (Untrapped Auto-Repair Diagnostic)';$UARDVersion='1.0.0'
-$Root=Split-Path -Parent $MyInvocation.MyCommand.Path;$Parent=Split-Path -Parent $Root;$ReportPath=Join-Path $Root 'diagnostic-latest.txt';$RepairPath=Join-Path $Root 'self-repair.ps1';$Repo='https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/'
-$log=New-Object 'System.Collections.Generic.List[string]';$initialProblems=@();$repairResult='NOT RUN';$deployment='NOT NEEDED';$UARDNeeded=$false
-$core=@('config.json','packet-filter.ps1','self-repair.ps1','status-untrapped.ps1','ultra-mode.ps1');$ext=@('manifest.json','background.js','content.js','popup.html','popup.js','bootstrap.bundle.min.js')
+$UAUDName='UAUD (Untrapped Auto-Update & Diagnostics)'
+$UAUDVersion='1.0.0'
+$UARDName='UARD (Untrapped Auto-Repair Diagnostic)'
+$UARDVersion='1.0.0'
+$Root=Split-Path -Parent $MyInvocation.MyCommand.Path
+$Parent=Split-Path -Parent $Root
+$ReportPath=Join-Path $Root 'diagnostic-latest.txt'
+$RepairPath=Join-Path $Root 'self-repair.ps1'
+$Repo='https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/'
+$log=New-Object 'System.Collections.Generic.List[string]'
+$initialProblems=@()
+$repairResult='NOT RUN'
+$deployment='NOT NEEDED'
+$UARDNeeded=$false
+$core=@('config.json','packet-filter.ps1','self-repair.ps1','status-untrapped.ps1','ultra-mode.ps1')
+$ext=@('manifest.json','background.js','content.js','popup.html','popup.js','bootstrap.bundle.min.js')
 function Log([string]$s){$x='['+(Get-Date -Format HH:mm:ss)+'] '+$s;Write-Host $x;[void]$log.Add($x)}
 function Hash([byte[]]$b){$h=[Security.Cryptography.SHA256]::Create();try{return ([BitConverter]::ToString($h.ComputeHash($b))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}}
 function Remote([string]$p){try{$r=Invoke-WebRequest -Uri ($Repo+$p+'?cb='+[DateTime]::UtcNow.Ticks) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop;return [Text.Encoding]::UTF8.GetBytes([string]$r.Content)}catch{return $null}}
 function Same([string]$rp,[string]$lp){if(!(Test-Path -LiteralPath $lp)){return $false};$r=Remote $rp;if($null -eq $r){return $null};try{return (Hash ([IO.File]::ReadAllBytes($lp))) -eq (Hash $r)}catch{return $false}}
 function HTTPS([string]$h){try{return (Test-NetConnection $h -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded}catch{return $false}}
 function VersionOf([byte[]]$b){try{$t=[Text.Encoding]::UTF8.GetString($b);$m=[regex]::Match($t,'(?im)^(?:#|//).*?ver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})');if($m.Success){return [version]$m.Groups[1].Value}}catch{};return [version]'0.0.0'}
-function BraveCopies{$o=@();$ud=Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data';if(Test-Path $ud){foreach($p in @(Get-ChildItem $ud -Directory -ErrorAction SilentlyContinue|Where-Object{$_.Name -eq 'Default' -or $_.Name -like 'Profile *'})){foreach($v in @(Get-ChildItem (Join-Path $p.FullName 'Extensions') -Directory -Recurse -ErrorAction SilentlyContinue)){foreach($z in @(Get-ChildItem $v.FullName -Directory -ErrorAction SilentlyContinue)){$m=Join-Path $z.FullName 'manifest.json';if(Test-Path $m){try{if(([string](Get-Content $m -Raw|ConvertFrom-Json).name) -eq 'Untrapped'){$o+=$z.FullName}}catch{}}}}}};foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.Name -match '^brave' -and $_.CommandLine -match '(?i)--load-extension='})){foreach($arg in ([regex]::Matches($proc.CommandLine,'--load-extension=([^\s"]+)'))){$d=$arg.Groups[1].Value;$m=Join-Path $d 'manifest.json';if(Test-Path $m){try{if(([string](Get-Content $m -Raw|ConvertFrom-Json).name) -eq 'Untrapped'){$o+=$d}}catch{}}}};return @($o|Sort-Object -Unique)}
-function Diagnose([string]$phase){$p=@();Log ('[DIAGNOSTIC] '+$phase+' diagnostic begins.');$c=$null;$scheduled=$false;$override=$false;try{$c=Get-Content (Join-Path $Root 'config.json') -Raw|ConvertFrom-Json;$a=[TimeSpan]::Parse($c.start);$b=[TimeSpan]::Parse($c.end);$n=(Get-Date).TimeOfDay;$inside=if($a -lt $b){$n -ge $a -and $n -lt $b}else{$n -ge $a -or $n -lt $b};$o=Join-Path $Root 'override-until.txt';if(Test-Path $o){try{$override=[DateTime]::UtcNow -lt ([DateTime]::Parse((Get-Content $o -Raw)).ToUniversalTime())}catch{$p+='Override file is unreadable.'}};$scheduled=[bool]($c.enabled -and $inside -and -not $override);Write-Host ('[STATUS] Policy: '+$(if($c.enabled){'ENABLED'}else{'DISABLED'}));Write-Host ('[STATUS] Schedule: '+$c.start+' - '+$c.end);Write-Host ('[STATUS] Scheduled blocking: '+$(if($scheduled){'ACTIVE'}else{'INACTIVE'}));Write-Host ('[STATUS] Override: '+$(if($override){'ACTIVE'}else{'INACTIVE'}))}catch{$p+='Config is invalid or unreadable.'}
-$yt=HTTPS 'www.youtube.com';$ch=HTTPS 'chatgpt.com';$cr=HTTPS 'www.crushon.ai';$want=-not $scheduled;Write-Host ('[STATUS] YouTube: '+$(if($yt){'REACHABLE'}else{'BLOCKED'}));Write-Host ('[STATUS] ChatGPT: '+$(if($ch){'REACHABLE'}else{'BLOCKED'}));Write-Host ('[STATUS] CrushOn: '+$(if($cr){'REACHABLE'}else{'BLOCKED'}));if($c){if($yt -ne $want){$p+='YouTube does not match configured policy.'};if($ch -ne $want){$p+='ChatGPT does not match configured policy.'};if($cr){$p+='CrushOn is reachable despite always-block policy.'}}
-$bad=@();$unknown=@();foreach($f in $core){$x=Same ('ultra-mode/'+$f) (Join-Path $Root $f);if($x -eq $false){$bad+=$f}elseif($null -eq $x){$unknown+=$f}};Write-Host ('[STATUS] Core source: '+$(if($bad.Count){'MISMATCH'}elseif($unknown.Count){'UNVERIFIED'}else{'CURRENT'}));if($bad.Count){$p+='Untrapped core differs from canonical GitHub: '+($bad -join ', ')}
-$nativeOK=(Test-Path (Join-Path $Root 'WinDivert.dll')) -and (Test-Path (Join-Path $Root 'WinDivert64.sys'));Write-Host ('[STATUS] WinDivert native files: '+$(if($nativeOK){'PRESENT'}else{'MISSING'}));if(!$nativeOK){$p+='Required WinDivert native component is missing.'}
-$packet=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.CommandLine -like '*packet-filter.ps1*'});$control=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.CommandLine -like '*ultra-mode.ps1*'});Write-Host ('[STATUS] Packet filter: '+$(if($packet.Count){'RUNNING'}else{'STOPPED'}));Write-Host ('[STATUS] Control plane: '+$(if($control.Count){'RUNNING'}else{'STOPPED'}));if(!$packet.Count){$p+='Packet filter is not running.'};if(!$control.Count){$p+='Control plane is not running.'}
-$ebad=@();$eunknown=@();foreach($f in $ext){$x=Same $f (Join-Path $Parent $f);if($x -eq $false){$ebad+=$f}elseif($null -eq $x){$eunknown+=$f}};Write-Host ('[STATUS] Extension source: '+$(if($ebad.Count){'MISMATCH'}elseif($eunknown.Count){'UNVERIFIED'}else{'CURRENT'}));if($ebad.Count){$p+='Enhanced extension source differs from canonical GitHub: '+($ebad -join ', ')}
-$bc=BraveCopies;Write-Host ('[STATUS] Brave Untrapped copies: '+$bc.Count+' '+$(if($bc.Count){'FOUND'}else{'NOT FOUND - INFORMATIONAL'}));$dns=$false;try{$dns=@(Resolve-DnsName google.com -DnsOnly -ErrorAction Stop|Where-Object{$_.IPAddress}).Count -gt 0}catch{};$goo=HTTPS 'www.google.com';$bfe=$false;try{$bfe=(Get-Service BFE).Status -eq 'Running'}catch{};$hp=Join-Path $env:SystemRoot 'System32\drivers\etc\hosts';$hosts=@();if(Test-Path $hp){$hosts=@(Get-Content $hp|Where-Object{$_ -match '(?i)(youtube|youtu\.be|chatgpt|crushon)' -and $_ -notmatch '^\s*#'})};Write-Host ('[STATUS] DNS: '+$(if($dns){'OK'}else{'FAILED'}));Write-Host ('[STATUS] Google HTTPS: '+$(if($goo){'OK'}else{'FAILED'}));Write-Host ('[STATUS] Relevant Hosts entries: '+$hosts.Count);Write-Host ('[STATUS] BFE: '+$(if($bfe){'RUNNING'}else{'NOT RUNNING/UNKNOWN'}));if(!$dns){$p+='External DNS resolution is failing.'};if(!$goo){$p+='External HTTPS connectivity to Google is failing.'};if($hosts.Count){$p+='Relevant Hosts entries were found.'};if(!$bfe){$p+='Base Filtering Engine is not running.'};return @{Problems=@($p);CoreBad=$bad;CoreUnknown=$unknown;ExtBad=$ebad;ExtUnknown=$eunknown;Brave=$bc;Packet=$packet;Control=$control;Dns=$dns;Google=$goo;Hosts=$hosts;Bfe=$bfe}}
-function DeployUARD{Log '[UARD DEPLOY] Checking canonical UARD and baseline version.';$r=Remote 'ultra-mode/self-repair.ps1';if($null -eq $r){Log '[UARD DEPLOY] GitHub unavailable; UARD deployment cannot be verified.';return 'UNVERIFIED'};try{[void][scriptblock]::Create([Text.Encoding]::UTF8.GetString($r))}catch{Log '[UARD DEPLOY] Canonical UARD failed PowerShell parsing.';return 'FAILED'};$rv=VersionOf $r;$lv=[version]'0.0.0';if(Test-Path $RepairPath){try{$lv=VersionOf ([IO.File]::ReadAllBytes($RepairPath))}catch{}};Write-Host ('[BASELINE] Installed UARD version: '+$lv);Write-Host ('[BASELINE] Canonical UARD version: '+$rv);if($rv -lt [version]'1.0.0'){Log '[BASELINE] REFUSED: canonical UARD is below protected 1.0.0 baseline.';return 'REFUSED BASELINE'};if($rv -lt $lv){Log '[BASELINE] REFUSED: canonical UARD is older than installed UARD; newer baseline retained.';return 'RETAINED NEWER'};if(Test-Path $RepairPath -and (Hash ([IO.File]::ReadAllBytes($RepairPath))) -eq (Hash $r)){Log '[UARD DEPLOY] UARD is current; deployment not required.';return 'CURRENT'};try{$bak=$RepairPath+'.pre-deploy-'+(Get-Date -Format yyyyMMdd-HHmmss)+'.bak';if(Test-Path $RepairPath){Copy-Item $RepairPath $bak -Force;Log ('[UARD DEPLOY] Backup created: '+$bak)};$tmp=$RepairPath+'.deploy.tmp';[IO.File]::WriteAllBytes($tmp,$r);if((Hash ([IO.File]::ReadAllBytes($tmp))) -ne (Hash $r)){throw 'SHA-256 deployment verification failed.'};Move-Item $tmp $RepairPath -Force;if((Hash ([IO.File]::ReadAllBytes($RepairPath))) -ne (Hash $r)){throw 'Post-deployment SHA-256 verification failed.'};Log '[UARD DEPLOY] UARD deployed and verified.';return 'DEPLOYED'}catch{Log ('[UARD DEPLOY] FAILED: '+$_.Exception.Message);Remove-Item $tmp -Force -ErrorAction SilentlyContinue;return 'FAILED'}}
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Log "=== $UAUDName ver $UAUDVersion ===";Log 'TRUE BASELINE 1.0.0: retained or upgraded, never silently downgraded.';$d=Diagnose 'INITIAL';$initialProblems=@($d.Problems);$UARDNeeded=($initialProblems.Count -gt 0);Write-Host '';Write-Host ('[UARD DECISION] Is UARD needed? '+$(if($UARDNeeded){'YES - actionable diagnostic condition found.'}else{'NO - diagnostic found no actionable repair condition.'}));Log ('[UARD DECISION] UARD NEEDED = '+$(if($UARDNeeded){'YES'}else{'NO'}))
-if($UARDNeeded){Log ('[DIAGNOSTIC] Actionable issues found: '+$initialProblems.Count);$deployment=DeployUARD;if($deployment -eq 'DEPLOYED' -or $deployment -eq 'CURRENT' -or $deployment -eq 'RETAINED NEWER'){Log '[UARD] Creating dedicated LIVE PowerShell window.';$p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$RepairPath) -WorkingDirectory $Root -WindowStyle Normal -PassThru -ErrorAction SilentlyContinue;if($p){$p.WaitForExit();$repairResult=if($p.ExitCode -eq 0){'SUCCESS'}elseif($p.ExitCode -eq 2){'VERIFICATION UNKNOWN'}else{'FAILURE'};Log ('[UARD] LIVE window closed. Exit code: '+$p.ExitCode+' / '+$repairResult)}else{$repairResult='START FAILURE';Log '[UARD] LIVE window could not be created.'}}else{Log '[UARD] Not launched because canonical deployment was not safely verified.';$repairResult='NOT LAUNCHED'}}else{Log '[DIAGNOSTIC] No actionable issues. UARD deployment and live repair window are not needed.'}
-Log '[DIAGNOSTIC] Final verification begins.';$f=Diagnose 'FINAL';$remaining=@($f.Problems);if($repairResult -eq 'SUCCESS'){$remaining=@($remaining|Where-Object{$_ -notlike 'Untrapped core differs from canonical GitHub:*' -and $_ -notlike 'Enhanced extension source differs from canonical GitHub:*' -and $_ -ne 'Packet filter is not running.' -and $_ -ne 'Control plane is not running.'})};$overall=if($remaining.Count){'UNHEALTHY'}else{'HEALTHY'}
-$out=@('CONDENSED DIAGNOSIS',' OVERALL: '+$overall,' UAUD: '+$UAUDName+' ver '+$UAUDVersion,' UARD NEEDED: '+$(if($UARDNeeded){'YES'}else{'NO'}),' UARD deployment: '+$deployment,' UARD result: '+$repairResult,' Remaining problems: '+$remaining.Count);foreach($x in $remaining){$out+=' ! '+$x};$out+=@('','EXPLANATORY TABLE','Component | Owner | Behaviour','UAUD | Update + diagnosis | Diagnoses first, explicitly decides whether UARD is needed, deploys it only when needed, then verifies again','UARD | Repair + verification | Repairs Untrapped-owned components and exits','Live PowerShell | UARD | Visible only while UARD is actively repairing; closes on exit','Notepad | Both | UARD report opens when it repairs/fails; UAUD diagnostic report always opens','Baseline | UAUD + UARD | 1.0.0 is protected; upgrades allowed; downgrades refused','Network infrastructure | Diagnosis only | Firewall/WFP/DNS/routes/Hosts/proxy/adapters/VPN/override are not modified','','VERSION / BASELINE','UAUD: '+$UAUDVersion,'UARD baseline: '+$UARDVersion,'TRUE BASELINE: 1.0.0 - RETAINED/UPGRADED, NEVER REMOVED','','DIAGNOSTIC CONTRACT','UAUD owns diagnosis/update/orchestration. UARD owns repair.','UAUD explicitly reports UARD NEEDED = YES or NO.','UARD is SHA-256 verified before launch.','A canonical UARD below 1.0.0 or below a newer installed UARD is refused.','UARD runs in its own visible PowerShell window and closes when complete.');$all=@($log)+@('')+$out;try{$all|Set-Content $ReportPath -Encoding UTF8}catch{};Write-Host '';Write-Host '=== UAUD REPORT COMPLETE ===';$out|ForEach-Object{Write-Host $_};try{Start-Process notepad.exe -ArgumentList @($ReportPath) -ErrorAction Stop;Write-Host '[REPORT] diagnostic-latest.txt opened in Notepad.'}catch{Write-Host ('[REPORT] Notepad failed: '+$_.Exception.Message)}
+function StateWord([bool]$v,[string]$yes,[string]$no){if($v){return $yes};return $no}
+function BraveCopies{
+ $o=@();$ud=Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data'
+ if(Test-Path $ud){foreach($p in @(Get-ChildItem $ud -Directory -ErrorAction SilentlyContinue|Where-Object{$_.Name -eq 'Default' -or $_.Name -like 'Profile *'})){
+  $ep=Join-Path $p.FullName 'Extensions'
+  if(Test-Path $ep){foreach($v in @(Get-ChildItem $ep -Directory -Recurse -ErrorAction SilentlyContinue)){foreach($z in @(Get-ChildItem $v.FullName -Directory -ErrorAction SilentlyContinue)){
+   $m=Join-Path $z.FullName 'manifest.json';if(Test-Path $m){try{if(([string](Get-Content $m -Raw|ConvertFrom-Json).name) -eq 'Untrapped'){$o+=$z.FullName}}catch{}}
+  }}}
+ }}
+ foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.Name -match '^brave' -and $_.CommandLine -match '(?i)--load-extension='})){
+  foreach($arg in ([regex]::Matches($proc.CommandLine,'--load-extension=([^\s"]+)'))){$d=$arg.Groups[1].Value;$m=Join-Path $d 'manifest.json';if(Test-Path $m){try{if(([string](Get-Content $m -Raw|ConvertFrom-Json).name) -eq 'Untrapped'){$o+=$d}}catch{}}}
+ }
+ return @($o|Sort-Object -Unique)
+}
+function Diagnose([string]$phase){
+ $p=@();Log ('[DIAGNOSTIC] '+$phase+' diagnostic begins.');$c=$null;$scheduled=$false;$override=$false
+ try{
+  $c=Get-Content (Join-Path $Root 'config.json') -Raw|ConvertFrom-Json
+  $a=[TimeSpan]::Parse($c.start);$b=[TimeSpan]::Parse($c.end);$n=(Get-Date).TimeOfDay
+  if($a -lt $b){$inside=($n -ge $a -and $n -lt $b)}else{$inside=($n -ge $a -or $n -lt $b)}
+  $o=Join-Path $Root 'override-until.txt'
+  if(Test-Path $o){try{$override=[DateTime]::UtcNow -lt ([DateTime]::Parse((Get-Content $o -Raw)).ToUniversalTime())}catch{$p+='Override file is unreadable.'}}
+  $scheduled=[bool]($c.enabled -and $inside -and -not $override)
+  Write-Host ('[STATUS] Policy: '+(StateWord ([bool]$c.enabled) 'ENABLED' 'DISABLED'))
+  Write-Host ('[STATUS] Schedule: '+$c.start+' - '+$c.end)
+  Write-Host ('[STATUS] Scheduled blocking: '+(StateWord $scheduled 'ACTIVE' 'INACTIVE'))
+  Write-Host ('[STATUS] Override: '+(StateWord $override 'ACTIVE' 'INACTIVE'))
+ }catch{$p+='Config is invalid or unreadable.'}
+ $yt=HTTPS 'www.youtube.com';$ch=HTTPS 'chatgpt.com';$cr=HTTPS 'www.crushon.ai';$want=-not $scheduled
+ Write-Host ('[STATUS] YouTube: '+(StateWord $yt 'REACHABLE' 'BLOCKED'));Write-Host ('[STATUS] ChatGPT: '+(StateWord $ch 'REACHABLE' 'BLOCKED'));Write-Host ('[STATUS] CrushOn: '+(StateWord $cr 'REACHABLE' 'BLOCKED'))
+ if($c){if($yt -ne $want){$p+='YouTube does not match configured policy.'};if($ch -ne $want){$p+='ChatGPT does not match configured policy.'};if($cr){$p+='CrushOn is reachable despite always-block policy.'}}
+ $bad=@();$unknown=@();foreach($f in $core){$x=Same ('ultra-mode/'+$f) (Join-Path $Root $f);if($x -eq $false){$bad+=$f}elseif($null -eq $x){$unknown+=$f}}
+ if($bad.Count){$coreState='MISMATCH'}elseif($unknown.Count){$coreState='UNVERIFIED'}else{$coreState='CURRENT'}
+ Write-Host ('[STATUS] Core source: '+$coreState);if($bad.Count){$p+='Untrapped core differs from canonical GitHub: '+($bad -join ', ')}
+ $nativeOK=(Test-Path (Join-Path $Root 'WinDivert.dll')) -and (Test-Path (Join-Path $Root 'WinDivert64.sys'));Write-Host ('[STATUS] WinDivert native files: '+(StateWord $nativeOK 'PRESENT' 'MISSING'));if(!$nativeOK){$p+='Required WinDivert native component is missing.'}
+ $packet=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.CommandLine -like '*packet-filter.ps1*'});$control=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.CommandLine -like '*ultra-mode.ps1*'});Write-Host ('[STATUS] Packet filter: '+(StateWord ([bool]$packet.Count) 'RUNNING' 'STOPPED'));Write-Host ('[STATUS] Control plane: '+(StateWord ([bool]$control.Count) 'RUNNING' 'STOPPED'));if(!$packet.Count){$p+='Packet filter is not running.'};if(!$control.Count){$p+='Control plane is not running.'}
+ $ebad=@();$eunknown=@();foreach($f in $ext){$x=Same $f (Join-Path $Parent $f);if($x -eq $false){$ebad+=$f}elseif($null -eq $x){$eunknown+=$f}}
+ if($ebad.Count){$extState='MISMATCH'}elseif($eunknown.Count){$extState='UNVERIFIED'}else{$extState='CURRENT'}
+ Write-Host ('[STATUS] Extension source: '+$extState);if($ebad.Count){$p+='Enhanced extension source differs from canonical GitHub: '+($ebad -join ', ')}
+ $bc=BraveCopies;Write-Host ('[STATUS] Brave Untrapped copies: '+$bc.Count+' '+(StateWord ([bool]$bc.Count) 'FOUND' 'NOT FOUND - INFORMATIONAL'))
+ $dns=$false;try{$dns=@(Resolve-DnsName google.com -DnsOnly -ErrorAction Stop|Where-Object{$_.IPAddress}).Count -gt 0}catch{};$goo=HTTPS 'www.google.com';$bfe=$false;try{$bfe=(Get-Service BFE).Status -eq 'Running'}catch{}
+ $hp=Join-Path $env:SystemRoot 'System32\drivers\etc\hosts';$hosts=@();if(Test-Path $hp){$hosts=@(Get-Content $hp|Where-Object{$_ -match '(?i)(youtube|youtu\.be|chatgpt|crushon)' -and $_ -notmatch '^\s*#'})}
+ Write-Host ('[STATUS] DNS: '+(StateWord $dns 'OK' 'FAILED'));Write-Host ('[STATUS] Google HTTPS: '+(StateWord $goo 'OK' 'FAILED'));Write-Host ('[STATUS] Relevant Hosts entries: '+$hosts.Count);Write-Host ('[STATUS] BFE: '+(StateWord $bfe 'RUNNING' 'NOT RUNNING/UNKNOWN'))
+ if(!$dns){$p+='External DNS resolution is failing.'};if(!$goo){$p+='External HTTPS connectivity to Google is failing.'};if($hosts.Count){$p+='Relevant Hosts entries were found.'};if(!$bfe){$p+='Base Filtering Engine is not running.'}
+ return @{Problems=@($p);CoreBad=$bad;CoreUnknown=$unknown;ExtBad=$ebad;ExtUnknown=$eunknown;Brave=$bc;Packet=$packet;Control=$control;Dns=$dns;Google=$goo;Hosts=$hosts;Bfe=$bfe}
+}
+function DeployUARD{
+ Log '[UARD DEPLOY] Checking canonical UARD and baseline version.';$r=Remote 'ultra-mode/self-repair.ps1'
+ if($null -eq $r){Log '[UARD DEPLOY] GitHub unavailable; UARD deployment cannot be verified.';return 'UNVERIFIED'}
+ try{[void][scriptblock]::Create([Text.Encoding]::UTF8.GetString($r))}catch{Log ('[UARD DEPLOY] Canonical UARD failed PowerShell parsing: '+$_.Exception.Message);return 'FAILED'}
+ $rv=VersionOf $r;$lv=[version]'0.0.0';if(Test-Path $RepairPath){try{$lv=VersionOf ([IO.File]::ReadAllBytes($RepairPath))}catch{}}
+ Write-Host ('[BASELINE] Installed UARD version: '+$lv);Write-Host ('[BASELINE] Canonical UARD version: '+$rv)
+ if($rv -lt [version]'1.0.0'){Log '[BASELINE] REFUSED: canonical UARD is below protected 1.0.0 baseline.';return 'REFUSED BASELINE'}
+ if($rv -lt $lv){Log '[BASELINE] REFUSED: canonical UARD is older than installed UARD; newer baseline retained.';return 'RETAINED NEWER'}
+ if((Test-Path $RepairPath) -and (Hash ([IO.File]::ReadAllBytes($RepairPath))) -eq (Hash $r)){Log '[UARD DEPLOY] UARD is current; deployment not required.';return 'CURRENT'}
+ $tmp=$null
+ try{
+  $bak=$RepairPath+'.pre-deploy-'+(Get-Date -Format yyyyMMdd-HHmmss)+'.bak';if(Test-Path $RepairPath){Copy-Item $RepairPath $bak -Force;Log ('[UARD DEPLOY] Backup created: '+$bak)}
+  $tmp=$RepairPath+'.deploy.tmp';[IO.File]::WriteAllBytes($tmp,$r);if((Hash ([IO.File]::ReadAllBytes($tmp))) -ne (Hash $r)){throw 'SHA-256 deployment verification failed.'};Move-Item $tmp $RepairPath -Force
+  if((Hash ([IO.File]::ReadAllBytes($RepairPath))) -ne (Hash $r)){throw 'Post-deployment SHA-256 verification failed.'};Log '[UARD DEPLOY] UARD deployed and verified.';return 'DEPLOYED'
+ }catch{Log ('[UARD DEPLOY] FAILED: '+$_.Exception.Message);if($tmp){Remove-Item $tmp -Force -ErrorAction SilentlyContinue};return 'FAILED'}
+}
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+Log "=== $UAUDName ver $UAUDVersion ===";Log 'TRUE BASELINE 1.0.0: retained or upgraded, never silently downgraded.'
+$d=Diagnose 'INITIAL';$initialProblems=@($d.Problems);$UARDNeeded=($initialProblems.Count -gt 0)
+Write-Host ''
+if($UARDNeeded){Write-Host '[UARD DECISION] Is UARD needed? YES - actionable diagnostic condition found.'}else{Write-Host '[UARD DECISION] Is UARD needed? NO - diagnostic found no actionable repair condition.'}
+Log ('[UARD DECISION] UARD NEEDED = '+(StateWord $UARDNeeded 'YES' 'NO'))
+if($UARDNeeded){
+ Log ('[DIAGNOSTIC] Actionable issues found: '+$initialProblems.Count);$deployment=DeployUARD
+ if($deployment -eq 'DEPLOYED' -or $deployment -eq 'CURRENT' -or $deployment -eq 'RETAINED NEWER'){
+  Log '[UARD] Creating dedicated LIVE PowerShell window.'
+  $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$RepairPath) -WorkingDirectory $Root -WindowStyle Normal -PassThru -ErrorAction SilentlyContinue
+  if($p){$p.WaitForExit();if($p.ExitCode -eq 0){$repairResult='SUCCESS'}elseif($p.ExitCode -eq 2){$repairResult='VERIFICATION UNKNOWN'}else{$repairResult='FAILURE'};Log ('[UARD] LIVE window closed. Exit code: '+$p.ExitCode+' / '+$repairResult)}else{$repairResult='START FAILURE';Log '[UARD] LIVE window could not be created.'}
+ }else{Log '[UARD] Not launched because canonical deployment was not safely verified.';$repairResult='NOT LAUNCHED'}
+}else{Log '[DIAGNOSTIC] No actionable issues. UARD deployment and live repair window are not needed.'}
+Log '[DIAGNOSTIC] Final verification begins.';$f=Diagnose 'FINAL';$remaining=@($f.Problems)
+if($repairResult -eq 'SUCCESS'){$remaining=@($remaining|Where-Object{$_ -notlike 'Untrapped core differs from canonical GitHub:*' -and $_ -notlike 'Enhanced extension source differs from canonical GitHub:*' -and $_ -ne 'Packet filter is not running.' -and $_ -ne 'Control plane is not running.'})}
+if($remaining.Count){$overall='UNHEALTHY'}else{$overall='HEALTHY'}
+$out=@('CONDENSED DIAGNOSIS',' OVERALL: '+$overall,' UAUD: '+$UAUDName+' ver '+$UAUDVersion,' UARD NEEDED: '+(StateWord $UARDNeeded 'YES' 'NO'),' UARD deployment: '+$deployment,' UARD result: '+$repairResult,' Remaining problems: '+$remaining.Count)
+foreach($x in $remaining){$out+=' ! '+$x}
+$out+=@('','EXPLANATORY TABLE','Component | Owner | Behaviour','UAUD | Update + diagnosis | Diagnoses first, explicitly decides whether UARD is needed, deploys it only when needed, then verifies again','UARD | Repair + verification | Repairs Untrapped-owned components and exits','Live PowerShell | UARD | Visible only while UARD is actively repairing; closes on exit','Notepad | Both | UARD report opens when it repairs/fails; UAUD diagnostic report always opens','Baseline | UAUD + UARD | 1.0.0 is protected; upgrades allowed; downgrades refused','Network infrastructure | Diagnosis only | Firewall/WFP/DNS/routes/Hosts/proxy/adapters/VPN/override are not modified','','VERSION / BASELINE','UAUD: '+$UAUDVersion,'UARD baseline: '+$UARDVersion,'TRUE BASELINE: 1.0.0 - RETAINED/UPGRADED, NEVER REMOVED','','DIAGNOSTIC CONTRACT','UAUD owns diagnosis/update/orchestration. UARD owns repair.','UAUD explicitly reports UARD NEEDED = YES or NO.','UARD is SHA-256 verified before launch.','A canonical UARD below 1.0.0 or below a newer installed UARD is refused.','UARD runs in its own visible PowerShell window and closes when complete.')
+$all=@($log)+@('')+$out
+try{$all|Set-Content $ReportPath -Encoding UTF8}catch{}
+Write-Host '';Write-Host '=== UAUD REPORT COMPLETE ===';$out|ForEach-Object{Write-Host $_}
+try{Start-Process notepad.exe -ArgumentList @($ReportPath) -ErrorAction SilentlyContinue}catch{}
+exit 0
