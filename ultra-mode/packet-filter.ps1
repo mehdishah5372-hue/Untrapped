@@ -1,6 +1,8 @@
 # Untrapped Ultra Mode — WinDivert packet-level destination blocker
-# Uses WinDivert's kernel packet filter with DROP, so blocked HTTPS traffic is
-# discarded before it can be carried through a user-space VPN tunnel.
+# Uses WinDivert's kernel packet filter with DROP.
+# Scheduled domains are blocked during the configured schedule; alwaysBlockedDomains
+# are blocked 24/7. alwaysAllowedDomains are resolved and removed from the DROP IP set
+# so they remain reachable even if their IP overlaps a blocked destination.
 # Run from an elevated PowerShell session or as the SYSTEM scheduled task.
 $ErrorActionPreference = 'Stop'
 
@@ -96,8 +98,6 @@ function New-WinDivertFilter($ips) {
 
     if (-not $clauses -or @($clauses).Count -eq 0) { return $null }
 
-    # HTTPS is the transport we need to stop. This covers TCP/TLS and UDP/QUIC
-    # while leaving unrelated traffic to the same IP alone.
     "outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443) and (" +
         (($clauses | ForEach-Object { "($_)" }) -join ' or ') + ")"
 }
@@ -111,12 +111,20 @@ try {
         $config = Get-Config
         $active = Test-UltraActive $config
 
-        # Normal domains follow the configured schedule. Domains in
-        # alwaysBlockedDomains are blocked regardless of the current time.
         $scheduledDomains = if ($active) { @($config.domains) } else { @() }
         $alwaysBlockedDomains = @($config.alwaysBlockedDomains)
+        $alwaysAllowedDomains = @($config.alwaysAllowedDomains)
+
         $domainsToBlock = @($scheduledDomains + $alwaysBlockedDomains)
-        $ips = @(Get-DomainIPs $domainsToBlock)
+        $blockedIps = @(Get-DomainIPs $domainsToBlock)
+        $allowedIps = @(Get-DomainIPs $alwaysAllowedDomains)
+
+        # Real exemption: remove every resolved allowed IP from the DROP set.
+        # This prevents the WinDivert rule from dropping HTTPS/QUIC packets to
+        # Windows-MCP/PyPI hosts even when an allowed host shares an IP with a
+        # blocked hostname.
+        $allowedSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
+        $ips = @($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
         $filter = New-WinDivertFilter $ips
 
         if (-not $filter) {
@@ -136,7 +144,7 @@ try {
                 $handle = $InvalidHandle
             }
 
-            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs."
+            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted)."
             $handle = [UntrappedWinDivert.Native]::WinDivertOpen($filter, $LayerNetwork, $Priority, [UInt64]$FlagDrop)
             if ($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero) {
                 $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -145,9 +153,9 @@ try {
 
             $lastFilter = $filter
             if ($alwaysBlockedDomains.Count -gt 0) {
-                Write-Host 'WinDivert packet block ACTIVE (scheduled domains + always-blocked domains).'
+                Write-Host 'WinDivert packet block ACTIVE (scheduled domains + always-blocked domains; allowed-domain exemption active).'
             } else {
-                Write-Host 'WinDivert packet block ACTIVE.'
+                Write-Host 'WinDivert packet block ACTIVE (allowed-domain exemption active).'
             }
         }
 
