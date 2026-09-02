@@ -1,264 +1,44 @@
 # Untrapped Ultra Mode - health / self-healing diagnostic
-# Reports Untrapped state plus surrounding Windows networking health.
-# It does NOT modify Hosts, Firewall, WFP, DNS, routing, adapters, or VPN.
-
-$ErrorActionPreference = 'Continue'
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ConfigPath = Join-Path $Root 'config.json'
-$ReportPath = Join-Path $Root 'diagnostic-latest.txt'
-$OverridePath = Join-Path $Root 'override-until.txt'
-$PacketPath = Join-Path $Root 'packet-filter.ps1'
-$UpdateUrl = 'https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/ultra-mode/status-untrapped.ps1'
-
-# Self-update
-$updateMarker = [Environment]::GetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','Process')
-$updateStatus = 'NOT CHECKED'; $updateDetail = 'No update check has completed yet.'
-if ($updateMarker) {
-    $updateStatus = 'UPDATED SUCCESSFULLY'; $updateDetail = 'Diagnostic restarted after successfully replacing itself with the newer GitHub copy.'
-} else {
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $tmp = Join-Path $env:TEMP ('untrapped-status-' + [guid]::NewGuid().ToString('N') + '.ps1')
-        Invoke-WebRequest -Uri $UpdateUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
-        $remote = [IO.File]::ReadAllText($tmp); $local = [IO.File]::ReadAllText($MyInvocation.MyCommand.Path)
-        if ($remote -ne $local -and $remote.Length -gt 1000) {
-            Copy-Item $tmp $MyInvocation.MyCommand.Path -Force -ErrorAction Stop
-            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-            [Environment]::SetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','1','Process')
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $MyInvocation.MyCommand.Path
-            exit
-        } elseif ($remote -eq $local) { $updateStatus='ALREADY UP TO DATE'; $updateDetail='Local diagnostic matches the official GitHub copy.' }
-        else { $updateStatus='UPDATE NOT APPLIED'; $updateDetail='Downloaded copy failed the update safety check.' }
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    } catch { $updateStatus='UPDATE FAILED'; $updateDetail='GitHub update failed: ' + $_.Exception.Message }
+# Checks Untrapped, IP/network health, browsers, and policy state.
+# Automatic repair is limited to Untrapped-owned files/processes. It does not rewrite Windows networking.
+$ErrorActionPreference='Continue'
+$Root=Split-Path -Parent $MyInvocation.MyCommand.Path
+$ConfigPath=Join-Path $Root 'config.json';$ReportPath=Join-Path $Root 'diagnostic-latest.txt';$OverridePath=Join-Path $Root 'override-until.txt';$PacketPath=Join-Path $Root 'packet-filter.ps1';$SelfRepairPath=Join-Path $Root 'self-repair.ps1'
+$UpdateUrl='https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/ultra-mode/status-untrapped.ps1'
+$lines=New-Object System.Collections.Generic.List[string];$problems=New-Object System.Collections.Generic.List[string]
+function Report([string]$x){Write-Host $x;[void]$lines.Add($x)};function Problem([string]$x){[void]$problems.Add($x)}
+function IP([string]$label,[string]$addr,[string]$kind){if([string]::IsNullOrWhiteSpace($addr)){Report "[WARN MISSING] IP: $label has no address";return};try{[void][Net.IPAddress]::Parse($addr);Report "[OK VALID] IP: $label = $addr ($kind)"}catch{Report "[FAIL INVALID] IP: $label = $addr";Problem "Invalid IP address: $label"}}
+function DNS([string]$name){try{@(Resolve-DnsName $name -DnsOnly -ErrorAction Stop|Where-Object IPAddress).Count -gt 0}catch{return $false}}
+function Repair-Untrapped{
+  if(Test-Path $SelfRepairPath){try{Report '[REPAIR] Running Untrapped self-repair engine.';Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$SelfRepairPath) -WorkingDirectory $Root -Verb RunAs -Wait -WindowStyle Hidden -ErrorAction Stop;Report '[OK REPAIR] Self-repair engine completed.';return}catch{Report '[FAIL REPAIR] Self-repair engine could not be started.'}}
+  if(Test-Path $PacketPath){try{@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*packet-filter.ps1*')|ForEach-Object{Stop-Process $_.ProcessId -Force -ErrorAction SilentlyContinue};Start-Sleep -Milliseconds 500;Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PacketPath) -WorkingDirectory $Root -Verb RunAs -WindowStyle Hidden -ErrorAction Stop;Report '[OK REPAIR] Packet filter restarted.'}catch{Report '[FAIL REPAIR] Packet filter restart failed.';Problem 'Untrapped packet filter could not be restarted.'}}
 }
-
-$lines = New-Object System.Collections.Generic.List[string]
-$problems = New-Object System.Collections.Generic.List[string]
-function Report([string]$Text) { Write-Host $Text; [void]$lines.Add($Text) }
-function Problem([string]$Text) { [void]$problems.Add($Text) }
-function DnsOK([string]$Name) {
-    try { if (@(Resolve-DnsName $Name -Type A -DnsOnly -ErrorAction Stop | Where-Object IPAddress).Count -gt 0) { return $true } } catch {}
-    try { if (@(Resolve-DnsName $Name -Type AAAA -DnsOnly -ErrorAction Stop | Where-Object IPAddress).Count -gt 0) { return $true } } catch {}
-    return $false
+function Browser-Test([string]$name,[string]$exe,[string]$url){
+  $p=@(Get-Process -Name $name -ErrorAction SilentlyContinue);if($p.Count){Report "[OK RUNNING] Browser: $name process running ($($p.Count) process(es))"}else{Report "[INFO NOT RUNNING] Browser: $name is not currently running"}
+  try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$r=Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15 -Headers @{'User-Agent'='Mozilla/5.0'} -ErrorAction Stop;if($r.StatusCode -ge 200 -and $r.StatusCode -lt 400){Report "[OK HTTP] Browser-network test for $name: $url -> HTTP $($r.StatusCode)";return $true};Report "[FAIL HTTP] Browser-network test for $name returned HTTP $($r.StatusCode)";return $false}catch{Report "[FAIL HTTP] Browser-network test for $name failed: $($_.Exception.Message)";Problem "$name browser-network path failed.";return $false}
 }
-function CheckFile([string]$Name) {
-    if (Test-Path (Join-Path $Root $Name)) { Report '[OK] File: ' + $Name + ' present' }
-    else { Report '[FAIL] File: ' + $Name + ' missing'; Problem ('Missing required file: ' + $Name) }
-}
-function TestTarget443([string]$Name,[bool]$ExpectedBlocked) {
-    try {
-        $tcp=Test-NetConnection $Name -Port 443 -WarningAction SilentlyContinue
-        if ($tcp.TcpTestSucceeded) {
-            if ($ExpectedBlocked) { Report ('[FAIL REACHABLE] BLOCK TEST: ' + $Name + ' reachable; expected BLOCKED; RemoteAddress=' + [string]$tcp.RemoteAddress); Problem ($Name + ' is reachable while it should be blocked.'); return $false }
-            Report ('[OK REACHABLE] BLOCK TEST: ' + $Name + ' reachable; expected ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress); return $true
-        }
-        if ($ExpectedBlocked) { Report ('[OK UNREACHABLE] BLOCK TEST: ' + $Name + ' blocked on TCP 443 as expected; RemoteAddress=' + [string]$tcp.RemoteAddress); return $true }
-        Report ('[FAIL UNREACHABLE] BLOCK TEST: ' + $Name + ' failed TCP 443 but should be ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress); Problem ($Name + ' is unreachable while it should be allowed.'); return $false
-    } catch {
-        if ($ExpectedBlocked) { Report ('[OK UNREACHABLE] BLOCK TEST: ' + $Name + ' could not establish TCP 443 as expected.'); return $true }
-        Report ('[WARN ERROR] BLOCK TEST: ' + $Name + ': ' + $_.Exception.Message); Problem ($Name + ' blocking test errored while it should be allowed.'); return $false
-    }
-}
-function Test-GitHubAccess {
-    try {
-        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-        $r=Invoke-WebRequest 'https://github.com' -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
-        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { Report ('[OK REACHABLE] GitHub accessible; HTTP ' + [string]$r.StatusCode) }
-        else { Report ('[FAIL] GitHub returned HTTP ' + [string]$r.StatusCode); Problem 'GitHub returned an unexpected HTTP status.' }
-    } catch { Report ('[FAIL] GitHub NOT accessible: ' + $_.Exception.Message); Problem 'GitHub could not be accessed.' }
-}
-function Get-ExpectedBlock([bool]$ScheduledActive,[bool]$OverrideActive) { return ([bool]$config.enabled -and $ScheduledActive -and -not $OverrideActive) }
-function Repair-UntrappedFilter {
-    if (-not (Test-Path $PacketPath)) { Report '[FAIL REPAIR] packet-filter.ps1 missing.'; Problem 'Cannot repair packet filter because packet-filter.ps1 is missing.'; return }
-    try {
-        @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object CommandLine -like '*packet-filter.ps1*') | ForEach-Object { try { Stop-Process $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
-        Start-Sleep -Milliseconds 500
-        Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PacketPath) -WorkingDirectory $Root -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
-        Report '[OK REPAIR STARTED] Packet filter restarted to rebuild WinDivert policy from config.json.'
-    } catch { Report ('[FAIL REPAIR] Could not restart packet-filter.ps1: ' + $_.Exception.Message); Problem 'Policy mismatch detected but packet filter restart failed.' }
-}
-function Test-IP([string]$Label,[string]$Address,[string]$Kind) {
-    if ([string]::IsNullOrWhiteSpace($Address)) { Report ('[WARN MISSING] IP: ' + $Label + ' has no address'); return }
-    try {
-        $parsed=[System.Net.IPAddress]::Parse($Address)
-        if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -or $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
-            Report ('[OK VALID] IP: ' + $Label + ' = ' + $Address + ' (' + $Kind + ')')
-        } else { Report ('[WARN] IP: ' + $Label + ' = ' + $Address + ' has an unexpected address family'); Problem ('Unexpected address family for IP ' + $Label) }
-    } catch { Report ('[FAIL INVALID] IP: ' + $Label + ' = ' + $Address + ' is not a valid IP address'); Problem ('Invalid IP address on ' + $Label) }
-}
-
-Report ''; Report '============================================================'; Report ' UNTRAPPED ULTRA MODE - HEALTH / SELF-HEALING DIAGNOSTIC'; Report '============================================================'
-$nowLocal=Get-Date
-Report ('Time: ' + $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz')); Report ('Time zone: ' + [TimeZoneInfo]::Local.DisplayName + ' (' + [TimeZoneInfo]::Local.Id + ')'); Report ('UTC time: ' + $nowLocal.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss ''UTC'''))
-Report ''; Report 'CLOCK / TIME CHECK'; Report '-----------------'; Report '[OK] System clock: ' + $nowLocal.ToString('yyyy-MM-dd HH:mm:ss zzz'); Report '[OK] Local UTC offset: ' + [TimeZoneInfo]::Local.GetUtcOffset($nowLocal).ToString()
-Report ''; Report 'GITHUB ACCESS CHECK'; Report '------------------'; Test-GitHubAccess
-Report ''; Report 'SELF-UPDATE STATUS'; Report '-----------------'; Report ('[' + $(if($updateStatus -eq 'UPDATE FAILED'){'FAIL'}elseif($updateStatus -eq 'ALREADY UP TO DATE'){'OK'}elseif($updateStatus -eq 'UPDATED SUCCESSFULLY'){'OK'}else{'WARN'}) + ' ' + $updateStatus + '] ' + $updateDetail)
-Report ''
-foreach ($n in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1','status-untrapped.ps1','self-repair.ps1')) { CheckFile $n }
-
-$config=$null; $active=$false; $overrideActive=$false
-try {
-    $config=Get-Content $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json
-    $start=[TimeSpan]::Parse([string]$config.start); $end=[TimeSpan]::Parse([string]$config.end); $now=(Get-Date).TimeOfDay
-    if($start -eq $end){$active=$true}elseif($start -lt $end){$active=($now -ge $start -and $now -lt $end)}else{$active=($now -ge $start -or $now -lt $end)}
-    Report '[OK] Configuration: config.json parsed and schedule times are valid'; Report ('[INFO] Schedule: ' + $config.start + ' -> ' + $config.end + '; currently ' + $(if($active){'ACTIVE'}else{'INACTIVE'}))
-} catch { Report ('[FAIL ERROR] Configuration: ' + $_.Exception.Message); Problem 'config.json could not be parsed or schedule is invalid.' }
-if(Test-Path $OverridePath){try{$until=[DateTime]::Parse((Get-Content $OverridePath -Raw -ErrorAction Stop)).ToUniversalTime();if([DateTime]::UtcNow -lt $until){$overrideActive=$true;Report ('[INFO] Override: ACTIVE until ' + $until.ToString('u'))}else{Report '[INFO] Override: inactive'}}catch{Report '[WARN ERROR] Override file could not be parsed'}}else{Report '[INFO] Override: inactive'}
-
-$packet=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*packet-filter.ps1*');$control=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*ultra-mode.ps1*')
-if($packet.Count){Report '[OK RUNNING] Packet filter process: RUNNING'}else{Report '[FAIL NOT RUNNING] Packet filter process: NOT RUNNING';Problem 'packet-filter.ps1 is not running.'}
-if($control.Count){Report '[OK RUNNING] Control plane process: RUNNING'}else{Report '[FAIL NOT RUNNING] Control plane process: NOT RUNNING';Problem 'ultra-mode.ps1 is not running.'}
-
-Report ''; Report 'IP ADDRESS HEALTH'; Report '-----------------'
-try {
-    $adapters=@(Get-NetAdapter -ErrorAction Stop)
-    $up=@($adapters|Where-Object Status -eq 'Up')
-    foreach($a in $up){
-        $cfg=@(Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue)
-        foreach($c in $cfg){
-            $ipv4=@($c.IPv4Address|ForEach-Object {$_.IPAddress})
-            $ipv6=@($c.IPv6Address|ForEach-Object {$_.IPAddress})
-            if($ipv4.Count -eq 0 -and $ipv6.Count -eq 0){Report ('[WARN NO IP] IP: '+$a.Name+' is UP but has no IP address assigned') ; Problem ($a.Name+' is UP but has no IP address.')}
-            foreach($ip in $ipv4){Test-IP ($a.Name+' IPv4') $ip 'IPv4'}
-            foreach($ip in $ipv6){Test-IP ($a.Name+' IPv6') $ip 'IPv6'}
-            if($c.IPv4DefaultGateway){Test-IP ($a.Name+' IPv4 gateway') ([string]$c.IPv4DefaultGateway.NextHop) 'gateway'}
-            if($c.DnsServer.ServerAddresses){foreach($dns in @($c.DnsServer.ServerAddresses)){Test-IP ($a.Name+' DNS') $dns 'DNS server'}}
-        }
-    }
-    $allIP=@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -ne '0.0.0.0'})
-    Report ('[INFO] Non-loopback IPv4 addresses detected: '+$allIP.Count)
-    foreach($ip in $allIP){
-        if($ip.PrefixOrigin -eq 'Dhcp'){Report ('[OK DHCP] '+$ip.IPAddress+' on ifIndex '+$ip.ifIndex+' uses DHCP')}
-        elseif($ip.PrefixOrigin -eq 'Manual'){Report ('[INFO STATIC] '+$ip.IPAddress+' on ifIndex '+$ip.ifIndex+' is statically configured')}
-        else{Report ('[INFO] '+$ip.IPAddress+' on ifIndex '+$ip.ifIndex+' PrefixOrigin='+$ip.PrefixOrigin)}
-    }
-} catch {Report ('[WARN ERROR] IP address query failed: '+$_.Exception.Message);Problem 'Could not fully inspect local IP addresses.'}
-try {
-    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-    $public4=(Invoke-RestMethod 'https://api.ipify.org' -TimeoutSec 10 -ErrorAction Stop).ToString().Trim()
-    Test-IP 'Public IPv4' $public4 'public IPv4'
-    Report '[OK REACHABLE] Public IPv4 lookup service responded.'
-} catch {Report '[WARN UNAVAILABLE] Public IPv4 could not be determined; this does not by itself mean the IP is bad.'}
-try {
-    $public6=(Invoke-RestMethod 'https://api6.ipify.org' -TimeoutSec 10 -ErrorAction Stop).ToString().Trim()
-    Test-IP 'Public IPv6' $public6 'public IPv6'
-    Report '[OK REACHABLE] Public IPv6 lookup service responded.'
-} catch {Report '[INFO] Public IPv6 unavailable or not configured.'}
-
-Report ''; Report 'DNS HEALTH'; Report '----------'
-try {
-    $dnsServers=@(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {$_.ServerAddresses} | ForEach-Object {$_.ServerAddresses})
-    if($dnsServers.Count){Report ('[OK CONFIGURED] DNS servers: ' + ($dnsServers -join ', '))}else{Report '[FAIL] No IPv4 DNS servers configured';Problem 'No IPv4 DNS servers are configured.'}
-} catch {Report ('[WARN ERROR] Could not query DNS server configuration: '+$_.Exception.Message)}
-foreach($name in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com','chatgpt.com','crushon.ai','windowsmcp.io','google.com')){if(DnsOK $name){Report ('[OK RESOLVED] DNS: '+$name)}else{Report ('[WARN UNRESOLVED] DNS: '+$name);if($name -eq 'google.com'){Problem 'General DNS resolution failed.'}}}
-
-Report ''; Report 'WINDOWS FIREWALL HEALTH'; Report '-----------------------'
-try {
-    $profiles=@(Get-NetFirewallProfile -ErrorAction Stop)
-    foreach($p in $profiles){if($p.Enabled){Report ('[OK ENABLED] Firewall profile: '+$p.Name+'; DefaultInbound='+$p.DefaultInboundAction+'; DefaultOutbound='+$p.DefaultOutboundAction)}else{Report ('[WARN DISABLED] Firewall profile: '+$p.Name);Problem ('Windows Firewall profile '+$p.Name+' is disabled.')}}
-    $rules=@(Get-NetFirewallRule -ErrorAction Stop);Report ('[OK QUERY] Firewall rules visible: '+$rules.Count)
-} catch {Report ('[WARN ERROR] Windows Firewall query failed: '+$_.Exception.Message);Problem 'Could not fully query Windows Firewall.'}
-
-Report ''; Report 'WFP / BASE FILTERING ENGINE HEALTH'; Report '----------------------------------'
-try {
-    $bfe=Get-Service BFE -ErrorAction Stop
-    if($bfe.Status -eq 'Running'){Report '[OK RUNNING] WFP Base Filtering Engine (BFE): RUNNING'}else{Report ('[FAIL NOT RUNNING] WFP Base Filtering Engine (BFE): '+$bfe.Status);Problem 'Windows Base Filtering Engine is not running.'}
-    $mps=Get-Service MpsSvc -ErrorAction SilentlyContinue
-    if($mps){Report ('[INFO] Windows Defender Firewall service (MpsSvc): '+$mps.Status)}
-} catch {Report ('[WARN ERROR] WFP/BFE query failed: '+$_.Exception.Message);Problem 'Could not query the Windows Filtering Platform base service.'}
-
-Report ''; Report 'ROUTING HEALTH'; Report '--------------'
-try {
-    $routes=@(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop)
-    if($routes.Count){Report ('[OK FOUND] IPv4 default routes: '+$routes.Count);foreach($r in $routes){Report ('  ifIndex='+$r.ifIndex+' NextHop='+$r.NextHop+' Metric='+$r.RouteMetric)}}else{Report '[FAIL NOT FOUND] No IPv4 default route';Problem 'No IPv4 default route was found.'}
-    $v6=@(Get-NetRoute -DestinationPrefix '::/0' -ErrorAction SilentlyContinue);Report ('[INFO] IPv6 default routes: '+$v6.Count)
-} catch {Report ('[WARN ERROR] Routing query failed: '+$_.Exception.Message);Problem 'Could not query routing table.'}
-
-Report ''; Report 'VPN / NETWORK ADAPTER HEALTH'; Report '----------------------------'
-try {
-    $adapters=@(Get-NetAdapter -ErrorAction Stop)
-    $up=@($adapters|Where-Object Status -eq 'Up')
-    Report ('[INFO] Network adapters UP: '+$up.Count)
-    foreach($a in $up){Report ('[OK UP] '+$a.Name+' | Status='+$a.Status+' | InterfaceIndex='+$a.ifIndex+' | LinkSpeed='+$a.LinkSpeed)}
-    $vpn=@($adapters|Where-Object {$_.Name -match '(?i)proton|vpn|wireguard|tun|tap'})
-    if($vpn.Count){foreach($v in $vpn){Report ('[INFO VPN] VPN-like adapter: '+$v.Name+' | Status='+$v.Status+' | InterfaceIndex='+$v.ifIndex)}}else{Report '[INFO] No VPN-like adapter name detected.'}
-    $proton=@($adapters|Where-Object {$_.Name -match '(?i)proton'})
-    if($proton.Count -and @($proton|Where-Object Status -eq 'Up').Count){Report '[OK VPN] ProtonVPN-related adapter appears UP.'}elseif($proton.Count){Report '[WARN VPN] ProtonVPN-related adapter exists but is not UP.'}else{Report '[INFO VPN] ProtonVPN adapter not detected.'}
-} catch {Report ('[WARN ERROR] Adapter/VPN query failed: '+$_.Exception.Message);Problem 'Could not fully query network adapters/VPN state.'}
-try {$vpnRoutes=@(Get-NetRoute -ErrorAction SilentlyContinue|Where-Object {$_.NextHop -eq '0.0.0.0' -and $_.DestinationPrefix -eq '0.0.0.0/0'});if($vpnRoutes.Count){Report ('[INFO VPN] Default-route interfaces: '+(($vpnRoutes|ForEach-Object {$_.ifIndex}) -join ', '))}}catch{}
-
-Report ''; Report 'HOSTS / PROXY HEALTH'; Report '--------------------'
-$hostsPath='C:\Windows\System32\drivers\etc\hosts'
-if(Test-Path $hostsPath){$hits=@(Get-Content $hostsPath -ErrorAction SilentlyContinue|Where-Object {$_ -match '(youtube|youtu\.be|ytimg|googlevideo|chatgpt|crushon)' -and $_ -notmatch '^\s*#'});if($hits.Count -eq 0){Report '[OK CLEAN] Hosts: no Untrapped target entries found'}else{Report ('[WARN ENTRIES FOUND] Hosts: '+$hits.Count+' relevant entry/entries found');$hits|ForEach-Object{Report ('  '+$_)};Problem 'Relevant Hosts entries exist outside Untrapped.'}}else{Report '[WARN] Hosts file not found.'}
-try{$proxy=@(netsh winhttp show proxy 2>&1);Report 'WinHTTP proxy:';$proxy|ForEach-Object{Report ('  '+[string]$_)}}catch{}
-
-Report ''; Report 'POLICY / ACTUAL STATE CHECK'; Report '--------------------------'
-$scheduledBlock=Get-ExpectedBlock $active $overrideActive
-Report ('[INFO] Policy says YouTube + ChatGPT SHOULD be '+$(if($scheduledBlock){'BLOCKED'}else{'ALLOWED'})+' right now.')
-if($overrideActive){Report '[INFO] Override is active; scheduled YouTube/ChatGPT blocking is intentionally bypassed.'}
-$ytActual=TestTarget443 'www.youtube.com' $scheduledBlock;$chatActual=TestTarget443 'chatgpt.com' $scheduledBlock
-$needsRepair=(($scheduledBlock -and (-not $ytActual -or -not $chatActual))-or((-not $scheduledBlock)-and(($ytActual -eq $false)-or($chatActual -eq $false))))
-if($needsRepair){Report '';Report '[REPAIR NEEDED] YouTube/ChatGPT actual reachability disagrees with configured policy.';Repair-UntrappedFilter;Start-Sleep -Seconds 2;$after=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*packet-filter.ps1*');if($after.Count){Report '[OK REPAIR VERIFIED] Packet filter process is running after repair attempt.'}else{Report '[FAIL REPAIR VERIFIED] Packet filter process is still not running after repair attempt.'}}else{Report '[OK POLICY MATCH] YouTube and ChatGPT actual state matches schedule/override.'}
-$alwaysBlocked=($config -and $config.alwaysBlockedDomains -and @($config.alwaysBlockedDomains).Count -gt 0);TestTarget443 'www.crushon.ai' $alwaysBlocked
-
-Report '';Report '============================================================';Report ' WHAT EVERYTHING MEANS - QUICK REFERENCE TABLE';Report '============================================================'
-Report 'Component              | What it checks/controls                    | Healthy means'
-Report '-----------------------|-------------------------------------------|------------------------------'
-Report 'Local IP addresses     | Addresses assigned to each adapter      | Valid IPs on needed UP adapters'
-Report 'Gateway IPs            | Next-hop address for local networks      | Valid gateway + reachable route'
-Report 'DNS IPs                | DNS servers assigned to adapters         | Valid server IPs + DNS resolution works'
-Report 'Public IP               | Address visible to internet              | Valid address returned; VPN changes it is normal'
-Report 'Target IPs             | IPs resolved for blocked/allowed domains | Valid IPs; blocked state must match policy'
-Report 'Untrapped packet filter| WinDivert packet-drop engine             | Process RUNNING + block tests match policy'
-Report 'Untrapped control plane | Reads schedule/override                   | Process RUNNING'
-Report 'WinDivert DLL/SYS       | Native driver components                | Both files PRESENT'
-Report 'Config                 | Schedule + domains + allow/block lists   | Valid JSON + valid times'
-Report 'Windows Firewall      | Windows firewall profiles/rules          | Profiles ENABLED; rules query works'
-Report 'WFP / BFE             | Windows Filtering Platform foundation    | BFE RUNNING'
-Report 'DNS                   | Domain-name resolution                   | Servers configured + targets RESOLVE'
-Report 'Routing               | Packet next-hop decisions                | IPv4 default route exists'
-Report 'VPN / adapters        | Tunnels + physical network interfaces   | Required adapters UP'
-Report 'Hosts file            | Local hostname overrides                 | No unexpected target entries'
-Report 'WinHTTP proxy         | System proxy configuration               | Expected proxy/direct setting'
-Report 'GitHub                | Source for diagnostic/self-repair        | github.com REACHABLE'
-Report 'System clock          | Determines active schedule window        | Correct/current time + offset'
-Report 'Override              | Intentional scheduled-policy bypass      | ACTIVE only when intentionally used'
-Report ''
-Report 'STATUS LABELS:'
-Report 'OK / OK <thing>       = Check passed or expected state found.'
-Report 'INFO                  = Information only; not a fault by itself.'
-Report 'WARN                  = Unusual/incomplete; investigate if relevant.'
-Report 'FAIL                  = Expected state is missing, broken, or contradictory.'
-Report 'CAUSE                 = Detected problem that may explain the failure.'
-Report 'REPAIR NEEDED         = Policy and actual blocking disagreed; Untrapped repair was triggered.'
-Report 'OK REPAIR VERIFIED    = Packet-filter process was running after repair attempt.'
-Report ''
-Report 'IP STATUS INTERPRETATION:'
-Report 'OK VALID IP           = The address has valid IPv4/IPv6 syntax.'
-Report 'OK DHCP               = Address was assigned by DHCP.'
-Report 'INFO STATIC           = Address is statically configured; not automatically a fault.'
-Report 'WARN NO IP            = Adapter is UP but has no IP; that can explain no connectivity.'
-Report 'FAIL INVALID          = The reported address is malformed/unusable.'
-Report 'WARN UNAVAILABLE      = Public-IP lookup failed; this does NOT prove your local IP is bad.'
-Report ''
-Report 'BLOCK TEST INTERPRETATION:'
-Report 'Expected BLOCKED + TCP 443 succeeds -> FAIL REACHABLE (target got through).'
-Report 'Expected BLOCKED + TCP 443 fails    -> OK UNREACHABLE (target is unreachable, consistent with blocking).'
-Report 'Expected ALLOWED + TCP 443 succeeds -> OK REACHABLE (target is accessible).'
-Report 'Expected ALLOWED + TCP 443 fails    -> FAIL UNREACHABLE (something is blocking/breaking it).'
-Report ''
-Report 'IMPORTANT LIMITS:'
-Report 'A valid IP does not prove internet connectivity; this report also checks DNS, gateways, routes, adapters, and TCP 443.'
-Report 'A failed public-IP lookup does not mean the assigned local IP is bad.'
-Report 'Firewall/WFP/DNS/routing/VPN/Hosts are OBSERVED, not automatically changed by this diagnostic.'
-Report 'Only Untrapped itself may be restarted automatically when its own policy test disagrees with configured policy.'
-Report '============================================================';Report ' DIAGNOSIS';Report '============================================================'
-$unique=@($problems|Sort-Object -Unique)
-if($unique.Count -eq 0){Report '[HEALTHY] No obvious Untrapped, IP, firewall, WFP, DNS, routing, VPN, Hosts, or blocking fault was detected.'}else{foreach($p in $unique){Report ('[CAUSE] '+$p)}}
-Report '';Report 'IMPORTANT: This diagnostic is observational except for Untrapped self-healing.'
-Report 'It may restart Untrapped packet-filter.ps1 when policy and actual blocking disagree.'
-Report 'It does NOT modify Windows Firewall, WFP, DNS, routing, VPN, adapters, proxy, Hosts, or the override.'
-Report ''
-$lines|Set-Content -Path $ReportPath -Encoding UTF8
-try { Start-Process notepad.exe -ArgumentList $ReportPath -ErrorAction SilentlyContinue } catch {}
+Report '';Report '============================================================';Report ' UNTRAPPED ULTRA MODE - HEALTH / SELF-HEALING DIAGNOSTIC';Report '============================================================'
+$now=Get-Date;Report "Time: $($now.ToString('yyyy-MM-dd HH:mm:ss zzz'))";Report "Time zone: $([TimeZoneInfo]::Local.DisplayName) ($([TimeZoneInfo]::Local.Id))";Report "UTC: $($now.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC'))"
+Report '';Report 'FILES / CONFIG';Report '-------------';foreach($n in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1','status-untrapped.ps1','self-repair.ps1')){if(Test-Path (Join-Path $Root $n)){Report "[OK] File: $n present"}else{Report "[FAIL] File: $n missing";Problem "Missing file: $n"}}
+$config=$null;$active=$false;$override=$false
+try{$config=Get-Content $ConfigPath -Raw|ConvertFrom-Json;$s=[TimeSpan]::Parse([string]$config.start);$e=[TimeSpan]::Parse([string]$config.end);$t=$now.TimeOfDay;if($s -eq $e){$active=$true}elseif($s -lt $e){$active=$t -ge $s -and $t -lt $e}else{$active=$t -ge $s -or $t -lt $e};Report "[OK] Config parsed; schedule $($config.start) -> $($config.end); scheduled window currently $(if($active){'ACTIVE'}else{'INACTIVE'})"}catch{Report "[FAIL] Config parse/schedule: $($_.Exception.Message)";Problem 'config.json or schedule is invalid.'}
+if(Test-Path $OverridePath){try{$u=[DateTime]::Parse((Get-Content $OverridePath -Raw)).ToUniversalTime();$override=[DateTime]::UtcNow -lt $u;Report "[INFO] Override: $(if($override){"ACTIVE until $($u.ToString('u'))"}else{'inactive'})"}catch{Report '[WARN] Override file could not be parsed';Problem 'Override file is malformed.'}}else{Report '[INFO] Override: inactive'}
+$packet=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*packet-filter.ps1*');$control=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object CommandLine -like '*ultra-mode.ps1*');if($packet.Count){Report '[OK RUNNING] Packet filter: RUNNING'}else{Report '[FAIL NOT RUNNING] Packet filter: NOT RUNNING';Problem 'packet-filter.ps1 is not running.'};if($control.Count){Report '[OK RUNNING] Control plane: RUNNING'}else{Report '[FAIL NOT RUNNING] Control plane: NOT RUNNING';Problem 'ultra-mode.ps1 is not running.'}
+Report '';Report 'IP ADDRESS HEALTH';Report '-----------------';try{$ad=@(Get-NetAdapter|Where-Object Status -eq 'Up');foreach($a in $ad){$c=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;$v4=@($c.IPv4Address|% IPAddress);$v6=@($c.IPv6Address|% IPAddress);if(!$v4.Count -and !$v6.Count){Report "[WARN NO IP] $($a.Name) is UP but has no IP";Problem "$($a.Name) has no IP address."};foreach($x in $v4){IP "$($a.Name) IPv4" $x 'IPv4'};foreach($x in $v6){IP "$($a.Name) IPv6" $x 'IPv6'};if($c.IPv4DefaultGateway){IP "$($a.Name) gateway" ([string]$c.IPv4DefaultGateway.NextHop) 'gateway'};foreach($d in @($c.DnsServer.ServerAddresses)){IP "$($a.Name) DNS" $d 'DNS server'}}}catch{Report "[WARN ERROR] IP query failed: $($_.Exception.Message)";Problem 'Could not inspect local IP configuration.'}
+try{$pub=(Invoke-RestMethod 'https://api.ipify.org' -TimeoutSec 10).ToString().Trim();IP 'Public IPv4' $pub 'public IPv4';Report '[OK REACHABLE] Public IPv4 lookup responded.'}catch{Report '[WARN UNAVAILABLE] Public IPv4 lookup failed; local IP may still be fine.'}
+try{$pub6=(Invoke-RestMethod 'https://api6.ipify.org' -TimeoutSec 10).ToString().Trim();IP 'Public IPv6' $pub6 'public IPv6'}catch{Report '[INFO] Public IPv6 unavailable.'}
+Report '';Report 'DNS / ROUTING / FIREWALL / WFP';Report '-----------------------------';try{$ds=@(Get-DnsClientServerAddress -AddressFamily IPv4|% ServerAddresses|Where-Object {$_});if($ds.Count){Report "[OK CONFIGURED] DNS servers: $($ds -join ', ')"}else{Report '[FAIL] No IPv4 DNS servers configured';Problem 'No IPv4 DNS servers configured.'}}catch{Report '[WARN] DNS configuration query failed'};foreach($n in @('google.com','youtube.com','www.youtube.com','ytimg.com','googlevideo.com','chatgpt.com','crushon.ai','windowsmcp.io')){if(DNS $n){Report "[OK RESOLVED] DNS: $n"}else{Report "[WARN UNRESOLVED] DNS: $n";if($n -eq 'google.com'){Problem 'General DNS resolution failed.'}}}
+try{$routes=@(Get-NetRoute -DestinationPrefix '0.0.0.0/0');if($routes.Count){Report "[OK FOUND] IPv4 default routes: $($routes.Count)";foreach($r in $routes){Report "  ifIndex=$($r.ifIndex) NextHop=$($r.NextHop) Metric=$($r.RouteMetric)"}}else{Report '[FAIL NOT FOUND] No IPv4 default route';Problem 'No IPv4 default route.'}}catch{Report '[WARN] Routing query failed'}
+try{$profiles=@(Get-NetFirewallProfile);foreach($p in $profiles){if($p.Enabled){Report "[OK ENABLED] Firewall $($p.Name): In=$($p.DefaultInboundAction) Out=$($p.DefaultOutboundAction)"}else{Report "[WARN DISABLED] Firewall $($p.Name)";Problem "Firewall profile $($p.Name) disabled."}};Report "[OK QUERY] Firewall rules visible: $(@(Get-NetFirewallRule).Count)"}catch{Report '[WARN] Firewall query failed'}
+try{$bfe=Get-Service BFE;if($bfe.Status -eq 'Running'){Report '[OK RUNNING] WFP Base Filtering Engine (BFE)'}else{Report "[FAIL NOT RUNNING] BFE: $($bfe.Status)";Problem 'BFE is not running.'}}catch{Report '[WARN] BFE query failed'}
+Report '';Report 'VPN / ADAPTERS / PROXY / HOSTS';Report '----------------------------';try{$ups=@(Get-NetAdapter|Where-Object Status -eq 'Up');Report "[INFO] Adapters UP: $($ups.Count)";foreach($a in $ups){Report "[OK UP] $($a.Name) | ifIndex=$($a.ifIndex) | $($a.LinkSpeed)"};$vp=@(Get-NetAdapter|Where-Object Name -match '(?i)proton|vpn|wireguard|tun|tap');foreach($v in $vp){Report "[INFO VPN] $($v.Name) | Status=$($v.Status)"}}catch{};try{$h=@(Get-Content 'C:\Windows\System32\drivers\etc\hosts'|Where-Object {$_ -match '(youtube|youtu\.be|ytimg|googlevideo|chatgpt|crushon)' -and $_ -notmatch '^\s*#'});if(!$h.Count){Report '[OK CLEAN] Hosts: no Untrapped target entries'}else{Report "[WARN ENTRIES FOUND] Hosts relevant entries: $($h.Count)";Problem 'Unexpected Untrapped target entries exist in Hosts.'}}catch{};try{$pr=netsh winhttp show proxy 2>&1;Report 'WinHTTP proxy:';$pr|%{Report "  $_"}}catch{}
+Report '';Report 'BROWSER HEALTH';Report '--------------';Report 'These are browser-path tests, not claims that a browser UI is open. They check the same HTTPS/DNS path browsers need and look for Untrapped interference.'
+$browserResults=@();$browserResults+=Browser-Test 'brave' 'brave.exe' 'https://www.google.com';$browserResults+=Browser-Test 'chrome' 'chrome.exe' 'https://www.google.com';$browserResults+=Browser-Test 'msedge' 'msedge.exe' 'https://www.google.com';$browserResults+=Browser-Test 'firefox' 'firefox.exe' 'https://www.google.com'
+try{$tcp=Test-NetConnection 'www.google.com' -Port 443 -WarningAction SilentlyContinue;if($tcp.TcpTestSucceeded){Report "[OK HTTPS] General HTTPS path works; RemoteAddress=$($tcp.RemoteAddress)"}else{Report "[FAIL HTTPS] General HTTPS path failed; RemoteAddress=$($tcp.RemoteAddress)";Problem 'General HTTPS path failed.'}}catch{Report '[WARN] General HTTPS test errored'}
+Report '';Report 'POLICY / ACTUAL BLOCKING';Report '-----------------------';$scheduled=[bool]$config.enabled -and $active -and -not $override;Report "[INFO] YouTube + ChatGPT SHOULD be $(if($scheduled){'BLOCKED'}else{'ALLOWED'}) right now.";function BlockTest([string]$n,[bool]$blocked){try{$x=Test-NetConnection $n -Port 443 -WarningAction SilentlyContinue;if($x.TcpTestSucceeded){if($blocked){Report "[FAIL REACHABLE] $n reachable; expected BLOCKED; IP=$($x.RemoteAddress)";Problem "$n is reachable while it should be blocked.";return $false}else{Report "[OK REACHABLE] $n reachable; expected ALLOWED; IP=$($x.RemoteAddress)";return $true}}else{if($blocked){Report "[OK UNREACHABLE] $n unreachable as expected; IP=$($x.RemoteAddress)";return $true}else{Report "[FAIL UNREACHABLE] $n unreachable but should be ALLOWED; IP=$($x.RemoteAddress)";Problem "$n is unreachable while it should be allowed.";return $false}}}catch{Report "[WARN] Block test $n errored";return !$blocked}}
+$yt=BlockTest 'www.youtube.com' $scheduled;$ch=BlockTest 'chatgpt.com' $scheduled;$cr=BlockTest 'www.crushon.ai' $true
+if(($scheduled -and (!$yt -or !$ch)) -or (!$scheduled -and (!$yt -or !$ch))){Report '[REPAIR NEEDED] Untrapped policy does not match actual YouTube/ChatGPT state.';Repair-Untrapped}else{Report '[OK POLICY MATCH] YouTube/ChatGPT state matches policy.'}
+if($browserResults -contains $false -or ($problems|Where-Object {$_ -match 'General HTTPS|DNS resolution|route|IP address|BFE|Firewall|browser-network'}).Count){Report '[REPAIR REVIEW] A checked subsystem is not OK.';Report '[INFO] Automatic repair is deliberately limited to Untrapped-owned files/processes. Windows Firewall/WFP/DNS/routing/VPN/Hosts/browser installations are not rewritten automatically.'}
+Report '';Report '============================================================';Report ' WHAT EVERYTHING MEANS - QUICK REFERENCE';Report '============================================================';Report 'IP addresses       | Local/public addresses | Valid + assigned to needed adapters';Report 'Gateway/routes     | Where packets leave    | Valid gateway + default route';Report 'DNS                | Names -> IPs           | DNS servers configured + domains resolve';Report 'HTTPS/browser path | Browser-style web path | Google HTTPS succeeds';Report 'Browser process     | Browser currently open | RUNNING is informational, not required';Report 'Firewall            | Windows firewall       | Profiles enabled + query works';Report 'WFP/BFE            | Windows packet platform| BFE RUNNING';Report 'VPN/adapters        | Network tunnels         | Required adapter(s) UP';Report 'Hosts/proxy         | Local overrides         | No unexpected target entries';Report 'Untrapped filter   | YouTube/ChatGPT dropper| RUNNING + policy tests match';Report 'Control plane      | Schedule/override      | RUNNING';Report 'Override           | Intentional bypass     | Active only when intentionally used';Report '';Report 'STATUS KEY';Report 'OK                 = Healthy/expected.';Report 'INFO               = Informational, not a fault.';Report 'WARN               = Something unusual or unavailable; investigate.';Report 'FAIL               = Expected function/state failed.';Report 'REPAIR NEEDED      = Untrapped detected its own policy mismatch and attempted repair.';Report 'IP HEALTH: OK VALID = valid address; WARN NO IP = UP adapter without an address; FAIL INVALID = malformed address.';Report 'BROWSER HEALTH: OK HTTP = HTTPS web path works; FAIL HTTP = web path failed and may explain browser/search failure.'
+Report '';Report '============================================================';Report ' DIAGNOSIS';Report '============================================================';$u=@($problems|Sort-Object -Unique);if(!$u.Count){Report '[HEALTHY] No obvious Untrapped/network/browser-path fault detected.'}else{$u|%{Report "[CAUSE] $_"}};Report '';Report 'Automatic changes made by this diagnostic are limited to restarting/repairing Untrapped itself. It does not alter Windows Firewall, WFP, DNS, routing, VPN, Hosts, proxy, or browser installations.'
+$lines|Set-Content $ReportPath -Encoding UTF8;try{Start-Process notepad.exe -ArgumentList $ReportPath -ErrorAction SilentlyContinue}catch{}
