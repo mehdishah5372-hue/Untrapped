@@ -4,30 +4,20 @@
   "end": "22:00",
   "domains": [
     "youtube.com",
-    "*.youtube.com",
     "youtu.be",
-    "*.youtu.be",
     "youtube-nocookie.com",
-    "*.youtube-nocookie.com",
     "youtubei.googleapis.com",
     "youtube.googleapis.com",
     "googlevideo.com",
-    "*.googlevideo.com",
     "ytimg.com",
-    "*.ytimg.com",
-    "chatgpt.com",
-    "*.chatgpt.com"
+    "chatgpt.com"
   ],
   "alwaysBlockedDomains": [
-    "crushon.ai",
-    "*.crushon.ai"
+    "crushon.ai"
   ],
   "alwaysAllowedDomains": [
     "windowsmcp.io",
-    "*.windowsmcp.io",
     "pypi.org",
-    "*.pypi.org",
-    "files.pythonhosted.org",
-    "*.files.pythonhosted.org"
+    "files.pythonhosted.org"
   ]
 }
