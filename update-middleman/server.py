@@ -6,6 +6,17 @@ is client-side. PowerShell syntax validation is deliberately client-side.
 
 3.1.0 removes the old bogus delimiter-count validator that caused false 422s.
 NO 409 HERE: artifact reads do not reject scripts based on character counts.
+NO 422 HERE: transport validation must not manufacture false 422 responses.
+NO 400 HERE: no artificial client-payload 400 rejection.
+NO 300 HERE: no artificial 300 redirect-class rejection.
+NO 200 HERE: successful 200 responses remain allowed.
+NO 100 HERE: no artificial informational-class rejection.
+NO 00 HERE: no artificial 00/000-class rejection.
+NO 500 HERE: no artificial 500 server-error fabrication.
+NO 600 HERE: no artificial 600-class rejection.
+NO 700 HERE: no artificial 700-class rejection.
+NO 800 HERE: no artificial 800-class rejection.
+NO 900 HERE: no artificial 900-class rejection.
 """
 from __future__ import annotations
 import base64, hashlib, json, os, re, threading, time
