@@ -10,9 +10,14 @@ $OverridePath = Join-Path $Root 'override-until.txt'
 $UpdateUrl = 'https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/ultra-mode/status-untrapped.ps1'
 
 # Self-update: read-only with respect to Untrapped policy/networking.
-# If GitHub has a newer copy, replace this script and restart it once.
+# The result is recorded in the final report so UAUD explains whether updating worked.
 $updateMarker = [Environment]::GetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','Process')
-if (-not $updateMarker) {
+$updateStatus = 'NOT CHECKED'
+$updateDetail = 'No update check has completed yet.'
+if ($updateMarker) {
+    $updateStatus = 'UPDATED SUCCESSFULLY'
+    $updateDetail = 'This run was restarted after the diagnostic script successfully replaced itself with the newer GitHub copy.'
+} else {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $tempUpdate = Join-Path $env:TEMP ('untrapped-status-' + [guid]::NewGuid().ToString('N') + '.ps1')
@@ -25,10 +30,18 @@ if (-not $updateMarker) {
             [Environment]::SetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','1','Process')
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $MyInvocation.MyCommand.Path
             exit
+        } elseif ($remote -eq $local) {
+            $updateStatus = 'ALREADY UP TO DATE'
+            $updateDetail = 'The local diagnostic already matches the official GitHub copy.'
+        } else {
+            $updateStatus = 'UPDATE NOT APPLIED'
+            $updateDetail = 'GitHub returned a copy, but it was rejected because it was unexpectedly short or otherwise failed the safety check.'
         }
         Remove-Item -LiteralPath $tempUpdate -Force -ErrorAction SilentlyContinue
     } catch {
-        Write-Host ('[WARN UPDATE UNAVAILABLE] Could not check for a newer diagnostic script: ' + $_.Exception.Message)
+        $updateStatus = 'UPDATE FAILED'
+        $updateDetail = 'GitHub update check/download/replacement failed: ' + $_.Exception.Message
+        Write-Host ('[WARN UPDATE UNAVAILABLE] ' + $updateDetail)
     }
 }
 
@@ -67,6 +80,17 @@ Report '============================================================'
 Report ' UNTRAPPED ULTRA MODE - READ-ONLY DIAGNOSTIC'
 Report '============================================================'
 Report ('Time: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Report ''
+Report 'SELF-UPDATE STATUS'
+Report '-----------------'
+if ($updateStatus -eq 'UPDATED SUCCESSFULLY') { Report '[OK UPDATED SUCCESSFULLY] Diagnostic self-update completed and the updated script restarted.' }
+elseif ($updateStatus -eq 'ALREADY UP TO DATE') { Report '[OK ALREADY UP TO DATE] Local diagnostic already matches the official GitHub copy.' }
+elseif ($updateStatus -eq 'UPDATE FAILED') { Report '[FAIL UPDATE FAILED] Diagnostic could not update itself.' }
+elseif ($updateStatus -eq 'UPDATE NOT APPLIED') { Report '[WARN UPDATE NOT APPLIED] A remote copy was found but was rejected by the update safety check.' }
+else { Report ('[WARN UPDATE STATUS] ' + $updateStatus) }
+Report ('  Details: ' + $updateDetail)
+Report '  What to do if update failed/unavailable: check that internet/GitHub access works, then run UAUD again. If it keeps failing, manually replace status-untrapped.ps1 with the official GitHub copy and rerun the diagnostic.'
+Report '  Self-update only updates this read-only diagnostic; it does NOT change policy, override state, firewall, WFP, DNS, routing, or VPN configuration.'
 Report ''
 foreach ($name in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1')) { CheckFile $name }
 $config = $null; $active = $false; $overrideActive = $false
@@ -124,6 +148,10 @@ Report '[WARN DISABLED]      A feature/configuration is disabled.'
 Report '[WARN ENTRIES FOUND] Unexpected relevant entries were found.'
 Report '[WARN ERROR]        A diagnostic check itself encountered an error.'
 Report '[WARN UPDATE UNAVAILABLE] GitHub update check failed; local diagnostic continues.'
+Report '[WARN UPDATE NOT APPLIED] A remote copy was found but the safety check rejected it.'
+Report '[FAIL UPDATE FAILED] Self-update could not complete; follow the SELF-UPDATE STATUS instructions above.'
+Report '[OK UPDATED SUCCESSFULLY] Self-update completed and the diagnostic restarted using the newer copy.'
+Report '[OK ALREADY UP TO DATE] No update was needed; local and official copies match.'
 Report '[INFO]               Informational status only; not a fault by itself.'
 Report '[HEALTHY]            No known fault was detected by this diagnostic.'
 Report '[CAUSE]              A specific problem was detected and listed as a likely cause.'
