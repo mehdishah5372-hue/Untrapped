@@ -1,50 +1,267 @@
-# Untrapped Ultra Mode - self-updating health dashboard
-$ErrorActionPreference='Continue'
-$Root=Split-Path -Parent $MyInvocation.MyCommand.Path
-$SelfPath=$MyInvocation.MyCommand.Path
-$ReportPath=Join-Path $Root 'diagnostic-latest.txt'
-$ConfigPath=Join-Path $Root 'config.json'
-$OverridePath=Join-Path $Root 'override-until.txt'
-$SelfRepairPath=Join-Path $Root 'self-repair.ps1'
-$ExtensionRoot=Split-Path -Parent $Root
-$RepoBase='https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/'
-$lines=New-Object 'System.Collections.Generic.List[string]'
-$problems=New-Object 'System.Collections.Generic.List[string]'
-function R([string]$x){Write-Host $x;[void]$lines.Add($x)}
-function P([string]$x){if(-not ($problems -contains $x)){[void]$problems.Add($x)}}
-function RemoteText([string]$rel){$tmp=Join-Path $env:TEMP ('untrapped-update-'+[guid]::NewGuid().ToString('N')+'.tmp');try{Invoke-WebRequest ($RepoBase+$rel+'?cb='+[DateTime]::UtcNow.Ticks) -OutFile $tmp -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop;return [IO.File]::ReadAllText($tmp)}finally{Remove-Item $tmp -Force -ErrorAction SilentlyContinue}}
-function ValidRemote([string]$rel,[string]$text){if([string]::IsNullOrWhiteSpace($text)){return $false};try{if($rel -like '*.ps1'){[void][scriptblock]::Create($text);return $true};if($rel -eq 'manifest.json' -or $rel -eq 'config.json'){$null=$text|ConvertFrom-Json;return $true};return $text.Length -gt 20}catch{return $false}}
-# SELF-UPDATE FIRST
-$updateState='UNKNOWN'
-if(-not $env:UNTRAPPED_STATUS_UPDATED){
- try{
-  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-  $remote=RemoteText 'ultra-mode/status-untrapped.ps1'
-  $local=[IO.File]::ReadAllText($SelfPath)
-  if($remote.Length -gt 1500 -and $remote -ne $local){
-   if(-not (ValidRemote 'ultra-mode/status-untrapped.ps1' $remote)){throw 'GitHub returned an invalid diagnostic script.'}
-   [IO.File]::Copy($SelfPath,$SelfPath+'.preupdate.bak',$true)
-   [IO.File]::WriteAllText($SelfPath,$remote,(New-Object Text.UTF8Encoding($false)))
-   $env:UNTRAPPED_STATUS_UPDATED='1'
-   Write-Host '[UPDATE] Diagnostic successfully downloaded from GitHub. Restarting now...'
-   $child=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$SelfPath) -WorkingDirectory $Root -Wait -PassThru
-   exit $child.ExitCode
-  }else{$updateState='ALREADY CURRENT'}
- }catch{$updateState='GITHUB UPDATE CHECK FAILED';P "GitHub diagnostic self-update failed: $($_.Exception.Message)"}
-}else{$updateState='UPDATED THIS RUN'}
-$now=Get-Date
-R '';R '========================================';R '       UNTRAPPED HEALTH DASHBOARD';R '========================================';R "Time: $($now.ToString('yyyy-MM-dd HH:mm:ss zzz'))";R "Diagnostic update: $updateState"
-$config=$null;$active=$false;$override=$false
-try{$config=Get-Content $ConfigPath -Raw|ConvertFrom-Json;$s=[TimeSpan]::Parse([string]$config.start);$e=[TimeSpan]::Parse([string]$config.end);$t=$now.TimeOfDay;if($s -eq $e){$active=$true}elseif($s -lt $e){$active=$t -ge $s -and $t -lt $e}else{$active=$t -ge $s -or $t -lt $e}}catch{P 'Config is invalid.'}
-if(Test-Path $OverridePath){try{$u=[DateTime]::Parse((Get-Content $OverridePath -Raw)).ToUniversalTime();$override=[DateTime]::UtcNow -lt $u}catch{P 'Override file is malformed.'}}
-$scheduled=[bool]($config.enabled -and $active -and -not $override)
-function Reach([string]$host){try{return [bool](Test-NetConnection $host -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded}catch{return $false}}
-R '';R 'POLICY';$yt=Reach 'www.youtube.com';$ch=Reach 'chatgpt.com';$cr=Reach 'www.crushon.ai';$ytOK=($yt -eq (-not $scheduled));$chOK=($ch -eq (-not $scheduled));$crOK=(-not $cr);R "  YouTube       $(if($ytOK){if($scheduled){'BLOCKED ✓'}else{'ALLOWED ✓'}}else{'WRONG ✗'})";R "  ChatGPT       $(if($chOK){if($scheduled){'BLOCKED ✓'}else{'ALLOWED ✓'}}else{'WRONG ✗'})";R "  CrushOn       $(if($crOK){'BLOCKED ✓'}else{'REACHABLE ✗'})";R "  Schedule      $($config.start) -> $($config.end) | $(if($scheduled){'BLOCKING'}else{'NOT BLOCKING'})";R "  Override      $(if($override){'ACTIVE'}else{'OFF'})";if(!$ytOK){P "YouTube does not match policy (expected $(if($scheduled){'blocked'}else{'allowed'}))."};if(!$chOK){P "ChatGPT does not match policy (expected $(if($scheduled){'blocked'}else{'allowed'}))."};if(!$crOK){P 'CrushOn is reachable while it should be blocked.'}
-$packet=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|? CommandLine -like '*packet-filter.ps1*');$control=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|? CommandLine -like '*ultra-mode.ps1*');$required=@('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1','status-untrapped.ps1','self-repair.ps1');$fileCount=@($required|%{Test-Path (Join-Path $Root $_)}|? {$_}).Count;R '';R 'UNTRAPPED';R "  Packet filter $(if($packet.Count){'RUNNING ✓'}else{'STOPPED ✗'})";R "  Control plane $(if($control.Count){'RUNNING ✓'}else{'STOPPED ✗'})";R "  Required files $fileCount/$($required.Count) $(if($fileCount -eq $required.Count){'✓'}else{'✗'})";if(!$packet.Count){P 'Packet filter is not running.'};if(!$control.Count){P 'Control plane is not running.'};if($fileCount -lt $required.Count){P 'One or more required Untrapped files are missing.'}
-$extItems=@('manifest.json','background.js','content.js','popup.html','popup.js','bootstrap.bundle.min.js');$extBad=0;R '';R 'EXTENSION SOURCE';foreach($rel in $extItems){$p=Join-Path $ExtensionRoot $rel;if(!(Test-Path $p)){R "  $rel MISSING ✗";$extBad++;continue};try{$local=[IO.File]::ReadAllText($p);$remote=RemoteText $rel;if($local -eq $remote){R "  $rel CURRENT ✓"}else{R "  $rel OUTDATED/DIFFERENT ✗";$extBad++}}catch{R "  $rel CHECK FAILED ✗";$extBad++;P "Extension source check failed for $rel."}};R "  Extension source: $(if($extBad -eq 0){'CURRENT ✓'}else{"$extBad file(s) need repair ✗"})";if($extBad){P 'Untrapped Enhanced extension source is missing or outdated.'}
-$matches=@();$userData=Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data';if(Test-Path $userData){$profiles=@(Get-ChildItem $userData -Directory -ErrorAction SilentlyContinue|? {$_.Name -eq 'Default' -or $_.Name -like 'Profile *'});foreach($profile in $profiles){$edir=Join-Path $profile.FullName 'Extensions';if(Test-Path $edir){foreach($id in @(Get-ChildItem $edir -Directory -ErrorAction SilentlyContinue)){foreach($ver in @(Get-ChildItem $id.FullName -Directory -ErrorAction SilentlyContinue)){$mp=Join-Path $ver.FullName 'manifest.json';if(Test-Path $mp){try{$j=Get-Content $mp -Raw|ConvertFrom-Json;if(([string]$j.name) -match '(?i)^Untrapped'){$matches+=$ver.FullName}}catch{}}}}}}};$matches=@($matches|Select-Object -Unique);R '';R 'BRAVE EXTENSION';if($matches.Count){foreach($m in $matches){$bad=0;R "  Found: $m";foreach($rel in $extItems){$p=Join-Path $m $rel;if(!(Test-Path $p)){$bad++;continue};try{$l=[IO.File]::ReadAllText($p);$r=RemoteText $rel;if($l -ne $r){$bad++}}catch{$bad++}};if($bad){R "  Installed copy: $bad file(s) differ ✗";P 'The installed Brave Untrapped extension differs from GitHub.'}else{R '  Installed copy: CURRENT ✓'}}}else{R '  Installed copy: NOT FOUND ⚠';P 'Brave installed Untrapped extension could not be located.'}
-R '';R 'NETWORK';$ad=@(Get-NetAdapter|? Status -eq 'Up');$badIP=$false;foreach($a in $ad){$c=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;if(!$c.IPv4Address -and !$c.IPv6Address){$badIP=$true}};$dnsGood=$false;try{$dnsGood=@(Resolve-DnsName 'google.com' -DnsOnly -ErrorAction Stop|? IPAddress).Count -gt 0}catch{};$httpsGood=Reach 'www.google.com';$routes=@(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue);$fwGood=$true;try{$fwGood=@(Get-NetFirewallProfile|? {!$_.Enabled}).Count -eq 0}catch{$fwGood=$false};$bfeGood=$false;try{$bfeGood=(Get-Service BFE).Status -eq 'Running'}catch{};R "  Internet      $(if($httpsGood){'OK ✓'}else{'FAIL ✗'})";R "  DNS           $(if($dnsGood){'OK ✓'}else{'FAIL ✗'})";R "  IP addresses  $(if(!$badIP -and $ad.Count){'OK ✓'}else{'CHECK ✗'})";R "  Routes        $(if($routes.Count){'OK ✓'}else{'FAIL ✗'})";R "  Firewall      $(if($fwGood){'OK ✓'}else{'CHECK ✗'})";R "  WFP/BFE       $(if($bfeGood){'OK ✓'}else{'FAIL ✗'})";R "  Adapters      $($ad.Count) UP $(if($ad.Count){'✓'}else{'✗'})";if(!$httpsGood){P 'General HTTPS path failed.'};if(!$dnsGood){P 'General DNS resolution failed.'};if($badIP){P 'An active adapter has no IP address.'};if(!$routes.Count){P 'No IPv4 default route.'};if(!$fwGood){P 'A Windows Firewall profile is disabled.'};if(!$bfeGood){P 'WFP Base Filtering Engine is not running.'}
-R '';R 'OTHER';$hostsBad=$false;try{$h=@(Get-Content 'C:\Windows\System32\drivers\etc\hosts'|? {$_ -match '(youtube|youtu\.be|ytimg|googlevideo|chatgpt|crushon)' -and $_ -notmatch '^\s*#'});$hostsBad=$h.Count -gt 0}catch{};$vpn=@(Get-NetAdapter|? Name -match '(?i)proton|speedify|vpn|wireguard|tun|tap');R "  Hosts         $(if(!$hostsBad){'CLEAN ✓'}else{'ENTRIES ✗'})";R "  VPN/tunnel    $(if($vpn.Count){($vpn|% Name)-join ', '}else{'none detected'})";try{[void](Invoke-WebRequest 'https://github.com' -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop);R '  GitHub        ACCESSIBLE ✓'}catch{R '  GitHub        UNREACHABLE ✗';P 'GitHub could not be reached.'};if($hostsBad){P 'Unexpected target entries exist in Hosts.'}
-function Repair{if(Test-Path $SelfRepairPath){try{R '';R '[REPAIR] Running complete Untrapped self-repair...';$p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$SelfRepairPath) -WorkingDirectory $Root -Verb RunAs -Wait -PassThru -ErrorAction Stop;if($p.ExitCode -eq 0){R '[REPAIR OK] Self-repair reported SUCCESS.';return $true}else{R "[REPAIR FAIL] Self-repair exited $($p.ExitCode).";return $false}}catch{R "[REPAIR FAIL] Self-repair could not start: $($_.Exception.Message)";return $false}};R '[REPAIR FAIL] self-repair.ps1 is missing.';return $false}
-$needsRepair=($extBad -gt 0 -or $matches.Count -eq 0 -or !$ytOK -or !$chOK -or !$crOK -or !$packet.Count -or !$control.Count -or $fileCount -lt $required.Count);if($needsRepair){R '';R '[REPAIR] One or more Untrapped-owned checks failed.';[void](Repair)}else{R '';R '[UPDATE] Untrapped and Untrapped Enhanced are already current. No updates needed.'}
-R '';R '========================================';if($problems.Count){R "STATUS: ATTENTION NEEDED ($($problems.Count))";foreach($x in $problems){R "  ! $x"}}else{R 'STATUS: ALL CLEAR ✓'};R '========================================';R 'Full diagnostic: diagnostic-latest.txt';R "Auto-update result: $updateState";R 'Extension auto-check: ENABLED';R 'Extension repair: ENABLED';R 'Automatic repairs are limited to Untrapped-owned files/processes.';$lines|Set-Content $ReportPath -Encoding UTF8;if($needsRepair -or $updateState -eq 'UPDATED' -or $updateState -eq 'UPDATED THIS RUN'){try{Start-Process notepad.exe -ArgumentList $ReportPath -ErrorAction SilentlyContinue}catch{}};if($problems.Count){exit 1}else{exit 0}
+# Untrapped Ultra Mode diagnostic - safe self-update bootstrap
+$ErrorActionPreference = 'Continue'
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SelfPath = $MyInvocation.MyCommand.Path
+$ReportPath = Join-Path $Root 'diagnostic-latest.txt'
+$RepairPath = Join-Path $Root 'self-repair.ps1'
+$RepoBase = 'https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/'
+
+function Get-RemoteText([string]$RelativePath) {
+    $url = $RepoBase + $RelativePath + '?cb=' + [DateTime]::UtcNow.Ticks
+    return (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
+}
+
+# FIRST JOB: make sure this diagnostic itself is current.
+$UpdateState = 'UNKNOWN'
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $Remote = Get-RemoteText 'ultra-mode/status-untrapped.ps1'
+    $Local = [IO.File]::ReadAllText($SelfPath)
+    if ($Remote.Length -gt 1500 -and $Remote -ne $Local) {
+        # Validate the downloaded PowerShell before replacing the working copy.
+        [void][scriptblock]::Create($Remote)
+        $Backup = $SelfPath + '.preupdate.bak'
+        [IO.File]::Copy($SelfPath, $Backup, $true)
+        [IO.File]::WriteAllText($SelfPath, $Remote, (New-Object Text.UTF8Encoding($false)))
+        Write-Host '[UPDATE] New diagnostic downloaded from GitHub and installed.'
+        Write-Host '[UPDATE] Restarting the new diagnostic now...'
+        $env:UNTRAPPED_STATUS_UPDATED = '1'
+        $Child = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$SelfPath) -WorkingDirectory $Root -Wait -PassThru
+        exit $Child.ExitCode
+    }
+    if ($env:UNTRAPPED_STATUS_UPDATED) {
+        $UpdateState = 'UPDATED THIS RUN'
+    } else {
+        $UpdateState = 'ALREADY CURRENT'
+    }
+} catch {
+    $UpdateState = 'GITHUB UPDATE CHECK FAILED'
+    Write-Host ('[UPDATE ERROR] ' + $_.Exception.Message)
+}
+
+$Lines = New-Object 'System.Collections.Generic.List[string]'
+$Problems = New-Object 'System.Collections.Generic.List[string]'
+function Out([string]$Text) {
+    Write-Host $Text
+    [void]$Lines.Add($Text)
+}
+function Problem([string]$Text) {
+    if (-not ($Problems -contains $Text)) {
+        [void]$Problems.Add($Text)
+    }
+}
+function TestHttps([string]$HostName) {
+    try {
+        return [bool](Test-NetConnection $HostName -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
+    } catch {
+        return $false
+    }
+}
+function TestRemoteFile([string]$RelativePath, [string]$LocalPath) {
+    try {
+        if (-not (Test-Path $LocalPath)) { return $false }
+        $remote = Get-RemoteText $RelativePath
+        $local = [IO.File]::ReadAllText($LocalPath)
+        return $local -eq $remote
+    } catch {
+        return $false
+    }
+}
+
+Out ''
+Out '========================================'
+Out '       UNTRAPPED HEALTH DASHBOARD'
+Out '========================================'
+Out ('Time: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Out ('Diagnostic update: ' + $UpdateState)
+
+# Policy
+$config = $null
+$scheduled = $false
+$override = $false
+try {
+    $config = Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
+    $start = [TimeSpan]::Parse([string]$config.start)
+    $end = [TimeSpan]::Parse([string]$config.end)
+    $nowTime = (Get-Date).TimeOfDay
+    if ($start -eq $end) {
+        $inWindow = $true
+    } elseif ($start -lt $end) {
+        $inWindow = $nowTime -ge $start -and $nowTime -lt $end
+    } else {
+        $inWindow = $nowTime -ge $start -or $nowTime -lt $end
+    }
+    if (Test-Path (Join-Path $Root 'override-until.txt')) {
+        try {
+            $until = [DateTime]::Parse((Get-Content (Join-Path $Root 'override-until.txt') -Raw)).ToUniversalTime()
+            $override = [DateTime]::UtcNow -lt $until
+        } catch {}
+    }
+    $scheduled = [bool]($config.enabled -and $inWindow -and -not $override)
+} catch {
+    Problem 'Config is invalid or unreadable.'
+}
+
+Out ''
+Out 'POLICY'
+$yt = TestHttps 'www.youtube.com'
+$chatgpt = TestHttps 'chatgpt.com'
+$crush = TestHttps 'www.crushon.ai'
+$ytExpectedReachable = -not $scheduled
+$ytOK = ($yt -eq $ytExpectedReachable)
+$chatOK = ($chatgpt -eq $ytExpectedReachable)
+$crushOK = -not $crush
+Out ('  YouTube  : ' + $(if ($ytOK) { if ($scheduled) { 'BLOCKED OK' } else { 'ALLOWED OK' } } else { 'WRONG' }))
+Out ('  ChatGPT  : ' + $(if ($chatOK) { if ($scheduled) { 'BLOCKED OK' } else { 'ALLOWED OK' } } else { 'WRONG' }))
+Out ('  CrushOn  : ' + $(if ($crushOK) { 'BLOCKED OK' } else { 'REACHABLE WRONG' }))
+if (-not $ytOK) { Problem 'YouTube does not match the configured policy.' }
+if (-not $chatOK) { Problem 'ChatGPT does not match the configured policy.' }
+if (-not $crushOK) { Problem 'CrushOn does not match the configured policy.' }
+
+# Core
+$packet = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*packet-filter.ps1*' })
+$control = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ultra-mode.ps1*' })
+$required = @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1','status-untrapped.ps1','self-repair.ps1')
+$missing = @($required | Where-Object { -not (Test-Path (Join-Path $Root $_)) })
+Out ''
+Out 'UNTRAPPED CORE'
+Out ('  Packet filter : ' + $(if ($packet.Count) { 'RUNNING OK' } else { 'STOPPED' }))
+Out ('  Control plane : ' + $(if ($control.Count) { 'RUNNING OK' } else { 'STOPPED' }))
+Out ('  Required files: ' + ($required.Count - $missing.Count) + '/' + $required.Count)
+if (-not $packet.Count) { Problem 'Packet filter is not running.' }
+if (-not $control.Count) { Problem 'Control plane is not running.' }
+if ($missing.Count) { Problem 'Required Untrapped files are missing: ' + ($missing -join ', ') }
+
+# Extension source
+$ExtensionFiles = @('manifest.json','background.js','content.js','popup.html','popup.js','bootstrap.bundle.min.js')
+$sourceBad = @()
+Out ''
+Out 'EXTENSION SOURCE'
+foreach ($file in $ExtensionFiles) {
+    $path = Join-Path (Split-Path -Parent $Root) $file
+    if (TestRemoteFile ('/' + $file).TrimStart('/') $path) {
+        Out ('  ' + $file + ' : CURRENT OK')
+    } else {
+        Out ('  ' + $file + ' : DIFFERENT/MISSING')
+        $sourceBad += $file
+    }
+}
+if ($sourceBad.Count) { Problem 'Untrapped Enhanced extension source needs repair.' }
+
+# Installed Brave extension
+$installed = @()
+$userData = Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data'
+if (Test-Path $userData) {
+    $profiles = @(Get-ChildItem $userData -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile *' })
+    foreach ($profile in $profiles) {
+        $extDir = Join-Path $profile.FullName 'Extensions'
+        if (-not (Test-Path $extDir)) { continue }
+        foreach ($idDir in @(Get-ChildItem $extDir -Directory -ErrorAction SilentlyContinue)) {
+            foreach ($verDir in @(Get-ChildItem $idDir.FullName -Directory -ErrorAction SilentlyContinue)) {
+                $manifest = Join-Path $verDir.FullName 'manifest.json'
+                if (Test-Path $manifest) {
+                    try {
+                        $m = Get-Content $manifest -Raw | ConvertFrom-Json
+                        if ([string]$m.name -match '(?i)^Untrapped') { $installed += $verDir.FullName }
+                    } catch {}
+                }
+            }
+        }
+    }
+}
+$installed = @($installed | Select-Object -Unique)
+Out ''
+Out 'BRAVE EXTENSION'
+if ($installed.Count -eq 0) {
+    Out '  Installed Untrapped copy: NOT FOUND'
+    Problem 'Installed Brave Untrapped extension could not be located.'
+} else {
+    foreach ($dir in $installed) {
+        $bad = @()
+        Out ('  Found: ' + $dir)
+        foreach ($file in $ExtensionFiles) {
+            $path = Join-Path $dir $file
+            if (-not (TestRemoteFile $file $path)) { $bad += $file }
+        }
+        if ($bad.Count) {
+            Out ('  Installed copy: ' + $bad.Count + ' file(s) differ')
+            Problem 'Installed Brave Untrapped extension differs from GitHub.'
+        } else {
+            Out '  Installed copy: CURRENT OK'
+        }
+    }
+}
+
+# Network health
+Out ''
+Out 'NETWORK'
+$adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up')
+$badIP = $false
+foreach ($adapter in $adapters) {
+    $ip = Get-NetIPConfiguration -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue
+    if (-not $ip.IPv4Address -and -not $ip.IPv6Address) { $badIP = $true }
+}
+$dnsOK = $false
+try { $dnsOK = @(Resolve-DnsName 'google.com' -DnsOnly -ErrorAction Stop | Where-Object IPAddress).Count -gt 0 } catch {}
+$httpsOK = TestHttps 'www.google.com'
+$routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+$bfeOK = $false
+try { $bfeOK = (Get-Service BFE -ErrorAction Stop).Status -eq 'Running' } catch {}
+Out ('  Internet : ' + $(if ($httpsOK) { 'OK' } else { 'FAIL' }))
+Out ('  DNS      : ' + $(if ($dnsOK) { 'OK' } else { 'FAIL' }))
+Out ('  IP       : ' + $(if (-not $badIP -and $adapters.Count) { 'OK' } else { 'CHECK' }))
+Out ('  Routes   : ' + $(if ($routes.Count) { 'OK' } else { 'FAIL' }))
+Out ('  WFP/BFE  : ' + $(if ($bfeOK) { 'OK' } else { 'FAIL' }))
+if (-not $httpsOK) { Problem 'General HTTPS failed.' }
+if (-not $dnsOK) { Problem 'General DNS resolution failed.' }
+if ($badIP) { Problem 'An active network adapter has no IP address.' }
+if (-not $routes.Count) { Problem 'No IPv4 default route exists.' }
+if (-not $bfeOK) { Problem 'Windows Base Filtering Engine is not running.' }
+
+# GitHub reachability
+Out ''
+Out 'GITHUB'
+try {
+    [void](Invoke-WebRequest 'https://github.com' -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop)
+    Out '  GitHub: ACCESSIBLE OK'
+} catch {
+    Out '  GitHub: UNREACHABLE'
+    Problem 'GitHub could not be reached.'
+}
+
+# Repair only Untrapped-owned components.
+$needsRepair = ($Problems.Count -gt 0 -or $sourceBad.Count -gt 0)
+if ($needsRepair -and (Test-Path $RepairPath)) {
+    Out ''
+    Out '[REPAIR] Starting Untrapped self-repair...'
+    try {
+        $repair = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$RepairPath) -WorkingDirectory $Root -Verb RunAs -Wait -PassThru -ErrorAction Stop
+        Out ('[REPAIR] Exit code: ' + $repair.ExitCode)
+    } catch {
+        Out ('[REPAIR] FAILED TO START: ' + $_.Exception.Message)
+    }
+}
+
+if ($sourceBad.Count -eq 0 -and $installed.Count -gt 0 -and $UpdateState -eq 'ALREADY CURRENT') {
+    Out ''
+    Out '[UPDATE] Untrapped and Untrapped Enhanced are already current. No updates needed.'
+}
+
+Out ''
+Out '========================================'
+if ($Problems.Count) {
+    Out ('STATUS: ATTENTION NEEDED (' + $Problems.Count + ')')
+    foreach ($problem in $Problems) { Out ('  ! ' + $problem) }
+} else {
+    Out 'STATUS: ALL CLEAR OK'
+}
+Out '========================================'
+Out ('Auto-update result: ' + $UpdateState)
+Out 'Extension auto-check: ENABLED'
+Out 'Extension repair: ENABLED'
+Out 'Automatic changes are limited to Untrapped-owned components.'
+$Lines | Set-Content $ReportPath -Encoding UTF8
+if ($needsRepair -or $UpdateState -eq 'UPDATED' -or $UpdateState -eq 'UPDATED THIS RUN') {
+    try { Start-Process notepad.exe -ArgumentList $ReportPath -ErrorAction SilentlyContinue } catch {}
+}
+if ($Problems.Count) { exit 1 } else { exit 0 }
