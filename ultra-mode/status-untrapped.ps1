@@ -1,168 +1,176 @@
-# Untrapped Ultra Mode - read-only health report
-# Saves the report to diagnostic-latest.txt and opens it in Notepad.
-# This script never changes policy or networking.
+# Untrapped Ultra Mode - read-only health check
+# This script does not change policy or networking.
 
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
-$OverridePath = Join-Path $Root 'override-until.txt'
 $ReportPath = Join-Path $Root 'diagnostic-latest.txt'
+$OverridePath = Join-Path $Root 'override-until.txt'
 
 $lines = New-Object System.Collections.Generic.List[string]
 $problems = New-Object System.Collections.Generic.List[string]
 
 function Report([string]$Text) {
-    [void]$lines.Add($Text)
     Write-Host $Text
+    [void]$lines.Add($Text)
 }
 
-function Check([string]$Name, [string]$State, [string]$Detail) {
-    $label = '[INFO]'
-    if ($State -eq 'OK') { $label = '[OK]' }
-    elseif ($State -eq 'WARN') { $label = '[WARN]' }
-    elseif ($State -eq 'FAIL') { $label = '[FAIL]' }
-    Report ($label + ' ' + $Name + ' - ' + $Detail)
+function Problem([string]$Text) {
+    [void]$problems.Add($Text)
 }
 
-function Resolve-TestDomain([string]$Domain) {
+function DnsOK([string]$Name) {
     try {
-        $result = @(Resolve-DnsName -Name $Domain -Type A -DnsOnly -ErrorAction Stop | Where-Object { $_.IPAddress })
-        if ($result.Count -gt 0) { return $true }
+        $a = @(Resolve-DnsName -Name $Name -Type A -DnsOnly -ErrorAction Stop | Where-Object { $_.IPAddress })
+        if ($a.Count -gt 0) { return $true }
     } catch {}
     try {
-        $result = @(Resolve-DnsName -Name $Domain -Type AAAA -DnsOnly -ErrorAction Stop | Where-Object { $_.IPAddress })
-        if ($result.Count -gt 0) { return $true }
+        $aaaa = @(Resolve-DnsName -Name $Name -Type AAAA -DnsOnly -ErrorAction Stop | Where-Object { $_.IPAddress })
+        if ($aaaa.Count -gt 0) { return $true }
     } catch {}
     return $false
 }
 
+function CheckFile([string]$Name) {
+    $path = Join-Path $Root $Name
+    if (Test-Path $path) {
+        Report ('[OK] File: ' + $Name + ' present')
+    } else {
+        Report ('[FAIL] File: ' + $Name + ' missing')
+        Problem ('Missing required file: ' + $Name)
+    }
+}
+
 Report ''
 Report '============================================================'
-Report ' UNTRAPPED ULTRA MODE - SELF-DIAGNOSTIC HEALTH REPORT'
+Report ' UNTRAPPED ULTRA MODE - READ-ONLY DIAGNOSTIC'
 Report '============================================================'
 Report ('Time: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))
 Report ''
 
-foreach ($file in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1')) {
-    if (Test-Path (Join-Path $Root $file)) {
-        Check ('File: ' + $file) 'OK' 'present'
-    } else {
-        Check ('File: ' + $file) 'FAIL' 'missing'
-        [void]$problems.Add('Missing required file: ' + $file)
-    }
+foreach ($name in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filter.ps1','ultra-mode.ps1')) {
+    CheckFile $name
 }
 
 $config = $null
 try {
     $config = Get-Content -Path $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json
-    [void][TimeSpan]::Parse([string]$config.start)
-    [void][TimeSpan]::Parse([string]$config.end)
-    Check 'Configuration' 'OK' 'config.json is valid and schedule times parse correctly'
-} catch {
-    Check 'Configuration' 'FAIL' $_.Exception.Message
-    [void]$problems.Add('Configuration could not be parsed or validated.')
-}
-
-if ($null -ne $config) {
-    $now = (Get-Date).TimeOfDay
     $start = [TimeSpan]::Parse([string]$config.start)
     $end = [TimeSpan]::Parse([string]$config.end)
-    $scheduled = $false
-    if ($start -eq $end) { $scheduled = $true }
-    elseif ($start -lt $end) { $scheduled = ($now -ge $start -and $now -lt $end) }
-    else { $scheduled = ($now -ge $start -or $now -lt $end) }
-    Check 'Schedule' 'OK' ($config.start + ' -> ' + $config.end + '; currently ' + $(if ($scheduled) { 'ACTIVE' } else { 'INACTIVE' }))
+    Report '[OK] Configuration: config.json parsed and schedule times are valid'
 
-    if (Test-Path $OverridePath) {
-        try {
-            $until = [DateTime]::Parse((Get-Content $OverridePath -Raw -ErrorAction Stop)).ToUniversalTime()
-            if ([DateTime]::UtcNow -lt $until) {
-                Check 'Override' 'INFO' ('ACTIVE until ' + $until.ToString('u'))
-            } else {
-                Check 'Override' 'INFO' 'inactive'
-            }
-        } catch {
-            Check 'Override' 'WARN' 'override-until.txt could not be parsed; no policy change made'
-        }
+    $now = (Get-Date).TimeOfDay
+    $active = $false
+    if ($start -eq $end) {
+        $active = $true
+    } elseif ($start -lt $end) {
+        $active = ($now -ge $start -and $now -lt $end)
     } else {
-        Check 'Override' 'INFO' 'inactive'
+        $active = ($now -ge $start -or $now -lt $end)
     }
-}
-
-$packetProcess = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*packet-filter.ps1*' })
-$controlProcess = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ultra-mode.ps1*' })
-
-if ($packetProcess.Count -gt 0) {
-    Check 'Packet filter process' 'OK' 'RUNNING'
-} else {
-    Check 'Packet filter process' 'WARN' 'NOT RUNNING'
-    [void]$problems.Add('packet-filter.ps1 is not running.')
-}
-
-if ($controlProcess.Count -gt 0) {
-    Check 'Control plane process' 'OK' 'RUNNING'
-} else {
-    Check 'Control plane process' 'WARN' 'NOT RUNNING'
-    [void]$problems.Add('ultra-mode.ps1 is not running.')
-}
-
-foreach ($domain in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com','chatgpt.com','crushon.ai','windowsmcp.io','google.com')) {
-    if (Resolve-TestDomain $domain) {
-        Check ('DNS: ' + $domain) 'OK' 'resolved'
+    if ([bool]$config.enabled) {
+        Report ('[INFO] Schedule: ' + [string]$config.start + ' -> ' + [string]$config.end + '; currently ' + $(if ($active) { 'ACTIVE' } else { 'INACTIVE' }))
     } else {
-        Check ('DNS: ' + $domain) 'WARN' 'could not resolve'
-        [void]$problems.Add('DNS failed for ' + $domain + '.')
+        Report '[WARN] Schedule: config is disabled'
+    }
+} catch {
+    Report ('[FAIL] Configuration: ' + $_.Exception.Message)
+    Problem 'config.json could not be parsed or its schedule is invalid.'
+}
+
+if (Test-Path $OverridePath) {
+    try {
+        $until = [DateTime]::Parse((Get-Content $OverridePath -Raw -ErrorAction Stop)).ToUniversalTime()
+        if ([DateTime]::UtcNow -lt $until) {
+            Report ('[INFO] Override: ACTIVE until ' + $until.ToString('u'))
+        } else {
+            Report '[INFO] Override: inactive'
+        }
+    } catch {
+        Report '[WARN] Override: override-until.txt could not be parsed'
+    }
+} else {
+    Report '[INFO] Override: inactive'
+}
+
+$packet = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*packet-filter.ps1*' })
+$control = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ultra-mode.ps1*' })
+
+if ($packet.Count -gt 0) {
+    Report '[OK] Packet filter process: RUNNING'
+} else {
+    Report '[WARN] Packet filter process: NOT RUNNING'
+    Problem 'packet-filter.ps1 is not running.'
+}
+
+if ($control.Count -gt 0) {
+    Report '[OK] Control plane process: RUNNING'
+} else {
+    Report '[WARN] Control plane process: NOT RUNNING'
+    Problem 'ultra-mode.ps1 is not running.'
+}
+
+foreach ($name in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com','chatgpt.com','crushon.ai','windowsmcp.io','google.com')) {
+    if (DnsOK $name) {
+        Report ('[OK] DNS: ' + $name + ' resolved')
+    } else {
+        Report ('[WARN] DNS: ' + $name + ' did not resolve')
+        if ($name -eq 'google.com') {
+            Problem 'General DNS resolution failed.'
+        } else {
+            Problem ('Target DNS resolution failed: ' + $name)
+        }
     }
 }
 
 try {
     $tcp = Test-NetConnection -ComputerName 'www.youtube.com' -Port 443 -WarningAction SilentlyContinue
     if ($tcp.TcpTestSucceeded) {
-        Check 'TCP 443: YouTube' 'OK' ('reachable at ' + [string]$tcp.RemoteAddress)
+        Report ('[OK] TCP 443: www.youtube.com reachable; RemoteAddress=' + [string]$tcp.RemoteAddress)
     } else {
-        Check 'TCP 443: YouTube' 'WARN' ('connection failed; RemoteAddress=' + [string]$tcp.RemoteAddress)
-        [void]$problems.Add('YouTube TCP 443 connection failed.')
+        Report ('[WARN] TCP 443: www.youtube.com failed; RemoteAddress=' + [string]$tcp.RemoteAddress)
+        Problem 'YouTube TCP 443 connection failed.'
     }
 } catch {
-    Check 'TCP 443: YouTube' 'WARN' $_.Exception.Message
+    Report ('[WARN] TCP 443 test error: ' + $_.Exception.Message)
 }
 
-$Hosts = 'C:\Windows\System32\drivers\etc\hosts'
-if (Test-Path $Hosts) {
-    $hits = @(Get-Content $Hosts -ErrorAction SilentlyContinue | Where-Object { $_ -match '(youtube|youtu\.be|ytimg|googlevideo|chatgpt|crushon)' })
+$hostsPath = 'C:\Windows\System32\drivers\etc\hosts'
+if (Test-Path $hostsPath) {
+    $hits = @(Get-Content $hostsPath -ErrorAction SilentlyContinue | Where-Object { $_ -match '(youtube|youtu\.be|ytimg|googlevideo|chatgpt|crushon)' })
     if ($hits.Count -eq 0) {
-        Check 'Hosts file' 'OK' 'no Untrapped target entries found'
+        Report '[OK] Hosts: no Untrapped target entries found'
     } else {
-        Check 'Hosts file' 'WARN' ($hits.Count.ToString() + ' relevant entry/entries found; Untrapped does not manage Hosts')
+        Report ('[WARN] Hosts: ' + $hits.Count + ' relevant entry/entries found')
         foreach ($hit in $hits) { Report ('       ' + $hit) }
-        [void]$problems.Add('Relevant Hosts entries exist outside Untrapped.')
+        Problem 'Relevant Hosts entries exist outside Untrapped.'
     }
 }
 
-Report ''
-Report 'WinHTTP proxy:'
 try {
     $proxy = @(netsh winhttp show proxy 2>&1)
-    foreach ($line in $proxy) { Report ('  ' + [string]$line) }
+    Report ''
+    Report 'WinHTTP proxy:'
+    foreach ($item in $proxy) { Report ('  ' + [string]$item) }
 } catch {}
 
 try {
-    $up = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
-    Check 'Network adapters' 'INFO' ($up.Count.ToString() + ' adapter(s) currently UP')
+    $adapters = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+    Report ('[INFO] Network adapters UP: ' + $adapters.Count)
 } catch {
-    Check 'Network adapters' 'WARN' $_.Exception.Message
+    Report '[WARN] Could not query network adapters'
 }
 
 try {
     $routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop)
     if ($routes.Count -gt 0) {
-        Check 'Default route' 'OK' ($routes.Count.ToString() + ' default route(s) present')
+        Report ('[OK] IPv4 default route(s): ' + $routes.Count)
     } else {
-        Check 'Default route' 'FAIL' 'no IPv4 default route found'
-        [void]$problems.Add('No IPv4 default route was found.')
+        Report '[FAIL] IPv4 default route: none found'
+        Problem 'No IPv4 default route was found.'
     }
 } catch {
-    Check 'Default route' 'WARN' $_.Exception.Message
+    Report ('[WARN] Default-route check failed: ' + $_.Exception.Message)
 }
 
 Report ''
@@ -170,28 +178,23 @@ Report '============================================================'
 Report ' DIAGNOSIS'
 Report '============================================================'
 
-if ($problems.Count -eq 0) {
+$uniqueProblems = @($problems | Sort-Object -Unique)
+if ($uniqueProblems.Count -eq 0) {
     Report '[HEALTHY] No obvious configuration, process, DNS, or routing fault detected.'
 } else {
-    foreach ($problem in @($problems | Sort-Object -Unique)) {
-        Report ('[CAUSE] ' + $problem)
+    foreach ($item in $uniqueProblems) {
+        Report ('[CAUSE] ' + $item)
     }
-    Report ''
-    Report 'NO POLICY CHANGES WERE MADE.'
 }
 
 Report ''
-Report '============================================================'
-Report ' END SELF-DIAGNOSTIC - READ ONLY'
+Report 'NO POLICY CHANGES WERE MADE.'
 Report '============================================================'
 
 try {
     $lines | Set-Content -Path $ReportPath -Encoding UTF8 -ErrorAction Stop
-    if (Test-Path $ReportPath) {
-        Start-Process -FilePath 'notepad.exe' -ArgumentList @($ReportPath) -ErrorAction Stop
-        Write-Host ''
-        Write-Host ('[OK] Diagnostic report saved: ' + $ReportPath)
-    }
+    Report ('[OK] Diagnostic report saved to: ' + $ReportPath)
+    Start-Process -FilePath 'notepad.exe' -ArgumentList $ReportPath -ErrorAction Stop
 } catch {
-    Write-Host ('[WARN] Could not save/open diagnostic report: ' + $_.Exception.Message)
+    Report ('[WARN] Could not save or open diagnostic report: ' + $_.Exception.Message)
 }
