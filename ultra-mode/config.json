@@ -21,5 +21,13 @@
   "alwaysBlockedDomains": [
     "crushon.ai",
     "*.crushon.ai"
+  ],
+  "alwaysAllowedDomains": [
+    "windowsmcp.io",
+    "*.windowsmcp.io",
+    "pypi.org",
+    "*.pypi.org",
+    "files.pythonhosted.org",
+    "*.files.pythonhosted.org"
   ]
 }
