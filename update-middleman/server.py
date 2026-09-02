@@ -1,4 +1,4 @@
-"""Untrapped Update Middleman 2.0.0.
+"""Untrapped Update Middleman 2.1.0.
 
 A conservative, deterministic update broker for Untrapped.
 
@@ -11,7 +11,10 @@ Key guarantees:
   policy or Windows configuration changes;
 - normalized bytes are hashed after translation and returned with verification
   metadata;
-- the 1.0.0 baseline floor remains protected for versioned PowerShell artifacts;
+- the 1.0.0 baseline floor remains protected for explicitly versioned PowerShell
+  artifacts;
+- unversioned legacy PowerShell artifacts are never treated as version 0.0.0
+  downgrades;
 - ordinary JSON is never silently converted into PowerShell.
 """
 from __future__ import annotations
@@ -34,7 +37,7 @@ UPSTREAM = os.environ.get(
 )
 MIN_BASELINE = (1, 0, 0)
 PROTOCOL = 2
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 PORT = int(os.environ.get("PORT", "8080"))
 CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))
 MAX_ARTIFACT_BYTES = int(os.environ.get("MAX_ARTIFACT_BYTES", str(8 * 1024 * 1024)))
@@ -76,14 +79,24 @@ def sha256(data: bytes) -> str:
 
 
 def version_of(data: bytes) -> tuple[int, int, int]:
+    """Read only an explicit source version marker from the file header.
+
+    Crucially, arbitrary comments elsewhere in a script cannot manufacture a
+    downgrade. Unversioned legacy scripts return (0, 0, 0) and are allowed.
+    """
     text = data.decode("utf-8", "replace")
+    head = "\n".join(line for line in text.splitlines() if line.strip())
+    head = "\n".join(head.splitlines()[:10])
     match = re.search(
-        r"(?im)^(?:#|//).*?ver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})",
-        text,
+        r"(?im)^(?:#|//)\s*[^\r\n]*?\bver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})\b",
+        head,
     )
     if not match:
         return (0, 0, 0)
-    return tuple(int(x) for x in match.group(1).split("."))
+    try:
+        return tuple(int(x) for x in match.group(1).split("."))
+    except (TypeError, ValueError):
+        return (0, 0, 0)
 
 
 def dotted_version(value: tuple[int, int, int]) -> str:
@@ -182,12 +195,7 @@ def json_value_to_powershell(value: Any, indent: int = 0) -> str:
 
 
 def extract_explicit_source(obj: dict[str, Any]) -> tuple[str | None, bool, str]:
-    """Return (source text, translated, reason).
-
-    The order is intentional. Explicit source/code keys win. A plain JSON object
-    is only rendered as a PowerShell data literal when an explicit language/target
-    marker requests it. This prevents config.json from becoming executable code.
-    """
+    """Return (source text, translated, reason)."""
     encoding = str(obj.get("encoding", obj.get("content_encoding", "")))
     language = str(
         obj.get("language", obj.get("lang", obj.get("type", obj.get("target", ""))))
@@ -239,13 +247,10 @@ def normalize(data: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
     if len(data) > MAX_ARTIFACT_BYTES:
         raise TranslationError("artifact exceeds size limit")
 
-    # JSON configuration files are never converted, regardless of their contents.
     if path.endswith(".json"):
         try:
             decode_json_text(data)
         except TranslationError:
-            # Preserve upstream bytes so a malformed canonical JSON artifact is
-            # reported as malformed rather than silently rewritten.
             meta["reason"] = "JSON preserved unchanged; validation failed"
             return data, False, meta
         meta["reason"] = "JSON configuration preserved unchanged"
@@ -262,7 +267,6 @@ def normalize(data: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
         meta["reason"] = "not valid JSON; preserved as source/text"
         return data, False, meta
 
-    # A top-level JSON string is a safe source envelope only for a .ps1 target.
     if isinstance(obj, str) and path.endswith(".ps1"):
         translated = clean_text(obj)
         errors = basic_powershell_lint(translated)
@@ -290,12 +294,9 @@ def normalize(data: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
         if errors:
             raise TranslationError("; ".join(errors))
         if not looks_like_powershell(source):
-            # Data literals are intentionally accepted; arbitrary prose is not.
             if not source.lstrip().startswith("# JSON-to-PowerShell"):
                 raise TranslationError("explicit PowerShell payload does not resemble PowerShell")
     else:
-        # For non-.ps1 targets we only unwrap an explicit source envelope. We do
-        # not attempt cross-language conversion because that would be speculative.
         if not translated:
             return data, False, meta
 
@@ -312,7 +313,7 @@ def normalize(data: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
 def fetch_upstream(path: str) -> bytes:
     req = Request(
         UPSTREAM + path + "?middleman=" + str(time.time_ns()),
-        headers={"User-Agent": "Untrapped-Update-Middleman/2.0.0"},
+        headers={"User-Agent": "Untrapped-Update-Middleman/2.1.0"},
     )
     with urlopen(req, timeout=30) as response:
         data = response.read(MAX_ARTIFACT_BYTES + 1)
@@ -371,7 +372,7 @@ def build_manifest() -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "UntrappedMiddleman/2.0.0"
+    server_version = "UntrappedMiddleman/2.1.0"
 
     def send_json(self, code: int, obj: dict[str, Any]) -> None:
         body = json.dumps(obj, indent=2).encode("utf-8")
@@ -394,6 +395,7 @@ class Handler(BaseHTTPRequestHandler):
                     "protocol": PROTOCOL,
                     "cache_ttl": CACHE_TTL,
                     "translation": "JSON-to-PowerShell explicit-envelope normalization enabled",
+                    "version_detection": "explicit header marker only; unversioned legacy scripts allowed",
                 })
                 return
 
@@ -410,6 +412,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 data, translated, meta = get_artifact(path)
                 declared_version = version_of(data)
+                # Only an explicit version marker can activate downgrade protection.
+                # Unversioned legacy scripts are not version 0.0.0 downgrades.
                 if (
                     path.endswith(".ps1")
                     and declared_version != (0, 0, 0)
@@ -420,6 +424,7 @@ class Handler(BaseHTTPRequestHandler):
                         "path": path,
                         "declared_version": dotted_version(declared_version),
                         "minimum_baseline": "1.0.0",
+                        "version_detection": "explicit header marker only",
                     })
                     return
 
@@ -444,6 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("X-Untrapped-Baseline", "1.0.0")
                 self.send_header("X-Untrapped-Protocol", str(PROTOCOL))
                 self.send_header("X-Untrapped-Cache-TTL", str(CACHE_TTL))
+                self.send_header("X-Untrapped-Version", dotted_version(declared_version))
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
