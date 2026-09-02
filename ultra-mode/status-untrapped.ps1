@@ -155,11 +155,9 @@ Report 'BLOCK TESTS'
 Report '------------'
 
 $scheduledBlock = ([bool]$config.enabled -and $active -and -not $overrideActive)
-$alwaysBlocked = $true
-if ($config -and $config.alwaysBlockedDomains) {
+$alwaysBlocked = $false
+if ($config -and $config.alwaysBlockedDomains -and @($config.alwaysBlockedDomains).Count -gt 0) {
     $alwaysBlocked = $true
-} else {
-    $alwaysBlocked = $false
 }
 
 TestTarget443 'www.youtube.com' $scheduledBlock
