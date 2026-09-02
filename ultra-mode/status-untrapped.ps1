@@ -53,6 +53,7 @@ foreach ($name in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filt
 }
 
 $config = $null
+$active = $false
 try {
     $config = Get-Content -Path $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json
     $start = [TimeSpan]::Parse([string]$config.start)
@@ -60,7 +61,6 @@ try {
     Report '[OK] Configuration: config.json parsed and schedule times are valid'
 
     $now = (Get-Date).TimeOfDay
-    $active = $false
     if ($start -eq $end) {
         $active = $true
     } elseif ($start -lt $end) {
@@ -117,6 +117,8 @@ foreach ($name in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com
         Report ('[WARN] DNS: ' + $name + ' did not resolve')
         if ($name -eq 'google.com') {
             Problem 'General DNS resolution failed.'
+        } elseif ($name -eq 'ytimg.com') {
+            Report '[INFO] ytimg.com DNS failure is non-fatal; YouTube core domains resolved.'
         } else {
             Problem ('Target DNS resolution failed: ' + $name)
         }
@@ -126,10 +128,19 @@ foreach ($name in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com
 try {
     $tcp = Test-NetConnection -ComputerName 'www.youtube.com' -Port 443 -WarningAction SilentlyContinue
     if ($tcp.TcpTestSucceeded) {
-        Report ('[OK] TCP 443: www.youtube.com reachable; RemoteAddress=' + [string]$tcp.RemoteAddress)
+        if ($active -and ($packet.Count -gt 0)) {
+            Report ('[WARN] TCP 443: www.youtube.com reachable while block is ACTIVE; this may indicate incomplete filtering; RemoteAddress=' + [string]$tcp.RemoteAddress)
+            Problem 'YouTube TCP 443 is reachable while the scheduled block is active.'
+        } else {
+            Report ('[OK] TCP 443: www.youtube.com reachable; block is not currently expected to prevent it; RemoteAddress=' + [string]$tcp.RemoteAddress)
+        }
     } else {
-        Report ('[WARN] TCP 443: www.youtube.com failed; RemoteAddress=' + [string]$tcp.RemoteAddress)
-        Problem 'YouTube TCP 443 connection failed.'
+        if ($active -and ($packet.Count -gt 0)) {
+            Report ('[OK] TCP 443: www.youtube.com blocked as expected while schedule is ACTIVE; RemoteAddress=' + [string]$tcp.RemoteAddress)
+        } else {
+            Report ('[WARN] TCP 443: www.youtube.com failed while blocking is not expected; RemoteAddress=' + [string]$tcp.RemoteAddress)
+            Problem 'YouTube TCP 443 connection failed while blocking is not expected.'
+        }
     }
 } catch {
     Report ('[WARN] TCP 443 test error: ' + $_.Exception.Message)
