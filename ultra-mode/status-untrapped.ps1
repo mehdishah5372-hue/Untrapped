@@ -1,11 +1,36 @@
 # Untrapped Ultra Mode - read-only health check
 # This script does not change policy or networking.
+# It automatically checks GitHub for a newer copy of THIS diagnostic script before running.
 
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $ReportPath = Join-Path $Root 'diagnostic-latest.txt'
 $OverridePath = Join-Path $Root 'override-until.txt'
+$UpdateUrl = 'https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/ultra-mode/status-untrapped.ps1'
+
+# Self-update: read-only with respect to Untrapped policy/networking.
+# If GitHub has a newer copy, replace this script and restart it once.
+$updateMarker = [Environment]::GetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','Process')
+if (-not $updateMarker) {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $tempUpdate = Join-Path $env:TEMP ('untrapped-status-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        Invoke-WebRequest -Uri $UpdateUrl -OutFile $tempUpdate -UseBasicParsing -ErrorAction Stop
+        $remote = [IO.File]::ReadAllText($tempUpdate)
+        $local = [IO.File]::ReadAllText($MyInvocation.MyCommand.Path)
+        if ($remote -ne $local -and $remote.Length -gt 1000) {
+            Copy-Item -LiteralPath $tempUpdate -Destination $MyInvocation.MyCommand.Path -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $tempUpdate -Force -ErrorAction SilentlyContinue
+            [Environment]::SetEnvironmentVariable('UNTRAPPED_STATUS_UPDATED','1','Process')
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $MyInvocation.MyCommand.Path
+            exit
+        }
+        Remove-Item -LiteralPath $tempUpdate -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host ('[WARN UPDATE UNAVAILABLE] Could not check for a newer diagnostic script: ' + $_.Exception.Message)
+    }
+}
 
 $lines = New-Object System.Collections.Generic.List[string]
 $problems = New-Object System.Collections.Generic.List[string]
@@ -243,15 +268,22 @@ Report '[WARN UNRESOLVED]    DNS lookup failed; this may or may not affect Untra
 Report '[WARN DISABLED]      A feature/configuration is disabled.'
 Report '[WARN ENTRIES FOUND] Unexpected relevant entries were found.'
 Report '[WARN ERROR]        A diagnostic check itself encountered an error.'
+Report '[WARN UPDATE UNAVAILABLE] GitHub update check failed; local diagnostic continues.'
 Report '[INFO]               Informational status only; not a fault by itself.'
 Report '[HEALTHY]            No known fault was detected by this diagnostic.'
 Report '[CAUSE]              A specific problem was detected and listed as a likely cause.'
 Report ''
 Report 'BLOCK-TEST RULE:'
-Report '  REACHABLE + expected ALLOWED  = [OK REACHABLE]'
+Report '  REACHABLE + expected ALLOWED   = [OK REACHABLE]'
 Report '  UNREACHABLE + expected ALLOWED = [FAIL UNREACHABLE]'
 Report '  REACHABLE + expected BLOCKED   = [FAIL REACHABLE]'
 Report '  UNREACHABLE + expected BLOCKED = [OK UNREACHABLE]'
+Report ''
+Report 'AUTO-UPDATE RULE:'
+Report '  Every UD run checks the official Untrapped GitHub copy.'
+Report '  If a newer copy is found, it replaces the local diagnostic and restarts it once.'
+Report '  If GitHub cannot be reached, the existing local diagnostic continues.'
+Report '  Auto-update does NOT change policy, override state, firewall, WFP, DNS, routing, or VPN configuration.'
 Report '============================================================'
 Report 'NO POLICY CHANGES WERE MADE.'
 Report '============================================================'
