@@ -1,22 +1,322 @@
 # UARD (Untrapped Auto-Repair Diagnostic) ver 1.0.0 - TRUE BASELINE
-# Baseline 1.0.0 may only be retained or upgraded.
-$ErrorActionPreference='Stop'
-$UARDName='UARD (Untrapped Auto-Repair Diagnostic)';$UARDVersion='1.0.0'
-$Root=Split-Path -Parent $MyInvocation.MyCommand.Path;$ExtensionRoot=Split-Path -Parent $Root
-$Middleman='https://untrapped-update-middleman-production.up.railway.app/v1/artifact/'
-$BackupRoot=Join-Path $Root 'repair-backups';$Report=Join-Path $Root 'repair-success-latest.txt'
-$log=New-Object 'System.Collections.Generic.List[string]';$changed=$false;$failed=$false;$unknown=$false
-$normAttempted=$false;$normOK=$false;$normFail=$false;$normFiles=New-Object 'System.Collections.Generic.List[string]'
-function Log([string]$s){$x='['+(Get-Date -Format HH:mm:ss)+'] '+$s;Write-Host $x;[void]$log.Add($x)}
-function Hash([byte[]]$b){$h=[Security.Cryptography.SHA256]::Create();try{return ([BitConverter]::ToString($h.ComputeHash($b))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}}
-function VersionOf([byte[]]$b){try{$m=[regex]::Match([Text.Encoding]::UTF8.GetString($b),'(?im)^(?:#|//).*?ver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})');if($m.Success){return [version]$m.Groups[1].Value}}catch{};return [version]'0.0.0'}
-function Normalize([byte[]]$b,[string]$name,[string]$type){if($type -eq 'json'){return $b};$t=[Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF).Trim();if(-not($t.StartsWith('{') -and $t.Length -ge 2)){return $b};try{$j=$t|ConvertFrom-Json -ErrorAction Stop}catch{return $b};if($j -isnot [psobject]){return $b};$v=$null;foreach($k in @('content','script','powershell','source')){if($j.PSObject.Properties.Name -contains $k -and $j.$k -is [string]){$v=[string]$j.$k;break}};if($null -eq $v){return $b};try{$script:normAttempted=$true;if(([string]$j.encoding).ToLower() -eq 'base64' -or ([string]$j.content_encoding).ToLower() -eq 'base64'){$o=[Convert]::FromBase64String($v)}else{$o=[Text.Encoding]::UTF8.GetBytes($v)};$script:normOK=$true;[void]$script:normFiles.Add($name);Log ('NORMALIZE SUCCESS '+$name+' JSON source wrapper translated to native '+$type+'.');return $o}catch{$script:normFail=$true;Log ('NORMALIZE FAILED '+$name+': '+$_.Exception.Message);return $b}}
-function Valid([hashtable]$x,[byte[]]$b){try{if($b.Length -lt 20){throw 'Artifact unexpectedly small.'};if($x.Type -eq 'script'){[void][scriptblock]::Create([Text.Encoding]::UTF8.GetString($b))};if($x.Type -eq 'json'){[void]([Text.Encoding]::UTF8.GetString($b)|ConvertFrom-Json)};if($x.Type -eq 'js' -and ([Text.Encoding]::UTF8.GetString($b)).Length -lt 20){throw 'JavaScript unexpectedly small.'};if($x.Type -eq 'text' -and ([Text.Encoding]::UTF8.GetString($b)).Length -lt 20){throw 'Text artifact unexpectedly small.'};return $true}catch{return $false}}
-function Download([hashtable]$x){Log ('DOWNLOAD START '+$x.Remote);$r=Invoke-WebRequest -Uri ($Middleman+$x.Remote+'?cb='+[DateTime]::UtcNow.Ticks) -UseBasicParsing -TimeoutSec 45 -ErrorAction Stop;if($r.StatusCode -ne 200){throw 'Middleman HTTP '+$r.StatusCode};$ms=New-Object IO.MemoryStream;try{$r.RawContentStream.CopyTo($ms);$b=$ms.ToArray()}finally{$ms.Dispose()};$b=Normalize $b $x.Remote $x.Type;if(-not(Valid $x $b)){throw 'Middleman artifact failed validation: '+$x.Remote};$header=[string]$r.Headers['X-Untrapped-SHA256'];if(-not [string]::IsNullOrWhiteSpace($header)){if($header.ToLowerInvariant() -ne (Hash $b)){throw 'Middleman response SHA-256 header mismatch: '+$x.Remote}};Log ('DOWNLOAD OK '+$x.Remote+' ('+$b.Length+' bytes) SHA256='+(Hash $b));return $b}
-function RepairOne([string]$base,[hashtable]$x,[string]$label){$path=Join-Path $base $x.Rel;Log ('CHECK '+$label+'/'+$x.Rel);$remote=$null;for($i=1;$i -le 8;$i++){try{$remote=Download $x;break}catch{Log ('RETRY '+$x.Remote+' '+$i+'/8: '+$_.Exception.Message);if($i -lt 8){Start-Sleep 2}}};if($null -eq $remote){if(Test-Path $path){$script:unknown=$true;Log ('UNVERIFIED '+$label+'/'+$x.Rel+'; canonical artifact could not be retrieved after 8 attempts; local copy retained.')}else{$script:failed=$true;Log ('FAIL '+$label+'/'+$x.Rel+'; required artifact missing and canonical artifact could not be retrieved.')}return};$same=$false;if(Test-Path $path){try{$same=(Hash ([IO.File]::ReadAllBytes($path))) -eq (Hash $remote)}catch{}};if($same){Log ('CURRENT '+$label+'/'+$x.Rel);return};Log ('UPDATE NEEDED '+$label+'/'+$x.Rel);$tmp=$null;try{if(-not(Test-Path $BackupRoot)){New-Item -ItemType Directory $BackupRoot -Force|Out-Null};if(Test-Path $path){$bk=Join-Path $BackupRoot ((Get-Date -Format yyyyMMdd-HHmmss)+'-'+$label.Replace('/','_')+'-'+$x.Rel.Replace('/','_'));Copy-Item $path $bk -Force;Log ('BACKUP '+$bk)};$par=Split-Path $path -Parent;if(-not(Test-Path $par)){New-Item -ItemType Directory $par -Force|Out-Null};$tmp=$path+'.tmp-'+[guid]::NewGuid().ToString('N');[IO.File]::WriteAllBytes($tmp,$remote);$tb=[IO.File]::ReadAllBytes($tmp);if((Hash $tb) -ne (Hash $remote)){throw 'Pre-install SHA-256 mismatch.'};if(-not(Valid $x $tb)){throw 'Pre-install validation failed.'};Move-Item $tmp $path -Force;$tmp=$null;if((Hash ([IO.File]::ReadAllBytes($path))) -ne (Hash $remote)){throw 'Post-install SHA-256 mismatch.'};Log ('REPAIRED+VERIFIED '+$label+'/'+$x.Rel);$script:changed=$true}catch{$script:failed=$true;Log ('FAIL '+$label+'/'+$x.Rel+': '+$_.Exception.Message);if($tmp){Remove-Item $tmp -Force -ErrorAction SilentlyContinue}}}
-function IsUntrappedManifest([string]$dir){$m=Join-Path $dir 'manifest.json';if(-not(Test-Path $m)){return $false};try{return ([string](Get-Content $m -Raw|ConvertFrom-Json).name) -eq 'Untrapped'}catch{return $false}}
-function FindBrave{$o=@();if(IsUntrappedManifest $ExtensionRoot){$o+=$ExtensionRoot;Log ('BRAVE/DEV SOURCE FOUND '+$ExtensionRoot)};$ud=Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data';if(Test-Path $ud){foreach($p in @(Get-ChildItem $ud -Directory -ErrorAction SilentlyContinue|Where-Object{$_.Name -eq 'Default' -or $_.Name -like 'Profile *'})){$ep=Join-Path $p.FullName 'Extensions';if(Test-Path $ep){foreach($v in @(Get-ChildItem $ep -Directory -Recurse -ErrorAction SilentlyContinue)){foreach($z in @(Get-ChildItem $v.FullName -Directory -ErrorAction SilentlyContinue)){if(IsUntrappedManifest $z){$o+=$z.FullName}}}}}};foreach($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.Name -match '^brave' -and $_.CommandLine -match '(?i)--load-extension='})){foreach($a in [regex]::Matches($p.CommandLine,'--load-extension=(?:"([^"]+)"|([^\s]+))')){$d=$a.Groups[1].Value;if([string]::IsNullOrWhiteSpace($d)){$d=$a.Groups[2].Value};if(IsUntrappedManifest $d){$o+=$d;Log ('BRAVE/DEV LOAD-EXTENSION FOUND '+$d)}}};@($o|Sort-Object -Unique)}
-function RestartOwned{if(-not $changed){Log 'RESTART NOT NEEDED';return};Log 'RESTART Checking Untrapped-owned packet/control processes.';foreach($pat in @('*packet-filter.ps1*','*ultra-mode.ps1*')){@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object{$_.CommandLine -like $pat})|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue;Log ('STOP PID '+$_.ProcessId)}};Start-Sleep -Milliseconds 800;foreach($f in @('packet-filter.ps1','ultra-mode.ps1')){$p=Join-Path $Root $f;if(Test-Path $p){Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$p) -WorkingDirectory $Root -Verb RunAs -WindowStyle Hidden -ErrorAction SilentlyContinue;Log ('START '+$f)}};Log 'RESTART COMPLETE'}
-$Core=@(@{Remote='ultra-mode/INSTALL-PACKET-FILTER.ps1';Rel='INSTALL-PACKET-FILTER.ps1';Type='script'},@{Remote='ultra-mode/INSTALL-ULTRA-MODE.ps1';Rel='INSTALL-ULTRA-MODE.ps1';Type='script'},@{Remote='ultra-mode/config.json';Rel='config.json';Type='json'},@{Remote='ultra-mode/create-override.ps1';Rel='create-override.ps1';Type='script'},@{Remote='ultra-mode/generate-keys.ps1';Rel='generate-keys.ps1';Type='script'},@{Remote='ultra-mode/packet-filter.ps1';Rel='packet-filter.ps1';Type='script'},@{Remote='ultra-mode/self-repair.ps1';Rel='self-repair.ps1';Type='script'},@{Remote='ultra-mode/status-untrapped.ps1';Rel='status-untrapped.ps1';Type='script'},@{Remote='ultra-mode/test-untrapped.ps1';Rel='test-untrapped.ps1';Type='script'},@{Remote='ultra-mode/ultra-mode.ps1';Rel='ultra-mode.ps1';Type='script'},@{Remote='ultra-mode/verify-override.ps1';Rel='verify-override.ps1';Type='script'})
-$Ext=@(@{Remote='manifest.json';Rel='manifest.json';Type='json'},@{Remote='background.js';Rel='background.js';Type='js'},@{Remote='content.js';Rel='content.js';Type='js'},@{Remote='popup.html';Rel='popup.html';Type='text'},@{Remote='popup.js';Rel='popup.js';Type='js'},@{Remote='bootstrap.bundle.min.js';Rel='bootstrap.bundle.min.js';Type='js'},@{Remote='assets/untrapped.png';Rel='assets/untrapped.png';Type='binary'},@{Remote='assets/untrapped.svg';Rel='assets/untrapped.svg';Type='binary'})
-try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Log "=== $UARDName ver $UARDVersion SELF-REPAIR BEGIN ===";Log 'BASELINE TRUE BASELINE 1.0.0: retained or upgraded, never removed.';Log 'MIDDLEMAN: Railway update broker is the comparison/update source.';$brave=@(FindBrave);if($brave.Count){Log ('BRAVE COPIES DETECTED: '+$brave.Count)}else{Log 'BRAVE PACKAGED/DEV COPY: NOT FOUND; informational only.'};foreach($x in $Ext){RepairOne $ExtensionRoot $x 'extension-source'};foreach($x in $Core){RepairOne $Root $x 'ultra-mode'};foreach($m in $brave){foreach($x in $Ext){RepairOne $m $x 'brave-extension'}};foreach($n in @('WinDivert.dll','WinDivert64.sys')){if(Test-Path (Join-Path $Root $n)){Log 'NATIVE OK '+$n}else{$failed=$true;Log 'FAIL MISSING '+$n}};if($normFail){$nr='UNSUCCESSFUL'}elseif($normOK){$nr='SUCCESSFUL'}else{$nr='NOT NEEDED'};Log ('NORMALIZATION RESULT: '+$nr);if($normFiles.Count){Log ('NORMALIZED FILES: '+($normFiles -join ', '))};RestartOwned;if($failed){$diag='REPAIR INCOMPLETE'}elseif($unknown){$diag='VERIFICATION INCOMPLETE'}elseif($changed){$diag='REPAIR SUCCESS'}else{$diag='NO REPAIR REQUIRED'};[void]$log.Add('');[void]$log.Add('[DIAGNOSIS] '+$diag);[void]$log.Add('IDENTITY: '+$UARDName+' ver '+$UARDVersion);[void]$log.Add('TRUE BASELINE: 1.0.0 - RETAINED/UPGRADED, NEVER REMOVED');[void]$log.Add('MIDDLEMAN: Railway update broker backed by canonical GitHub main');[void]$log.Add('BRAVE COPIES DETECTED: '+$brave.Count);[void]$log.Add('NORMALIZATION: '+$nr);[void]$log.Add('PROTECTED: Firewall/WFP/DNS/routes/Hosts/proxy/adapters/VPN/override policy are never modified.');$log|Set-Content $Report -Encoding UTF8;Log '=== UARD SELF-REPAIR END ===';if($changed -or $failed){Start-Process notepad.exe -ArgumentList @($Report) -ErrorAction SilentlyContinue};if($failed){exit 1}elseif($unknown){exit 2}else{exit 0}}catch{Log ('FAIL FATAL '+$_.Exception.Message);@($UARDName+' ver '+$UARDVersion,'UARD FAILURE',$_.Exception.Message,'TRUE BASELINE: 1.0.0')|Set-Content $Report -Encoding UTF8;Start-Process notepad.exe -ArgumentList @($Report) -ErrorAction SilentlyContinue;exit 1}
+# Baseline 1.0.0 may be retained or upgraded; never silently downgraded.
+$ErrorActionPreference = 'Stop'
+$UARDName = 'UARD (Untrapped Auto-Repair Diagnostic)'
+$UARDVersion = '1.0.0'
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ExtensionRoot = Split-Path -Parent $Root
+$Middleman = 'https://untrapped-update-middleman-production.up.railway.app'
+$ArtifactBase = $Middleman + '/v1/artifact/'
+$BackupRoot = Join-Path $Root 'repair-backups'
+$Report = Join-Path $Root 'repair-success-latest.txt'
+$log = New-Object 'System.Collections.Generic.List[string]'
+$changed = $false
+$failed = $false
+$unknown = $false
+$normAttempted = $false
+$normOK = $false
+$normFail = $false
+$normFiles = New-Object 'System.Collections.Generic.List[string]'
+
+function Log([string]$Message) {
+    $line = '[' + (Get-Date -Format HH:mm:ss) + '] ' + $Message
+    Write-Host $line
+    [void]$log.Add($line)
+}
+
+function HashBytes([byte[]]$Bytes) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function VersionOf([byte[]]$Bytes) {
+    try {
+        $text = [Text.Encoding]::UTF8.GetString($Bytes)
+        $m = [regex]::Match($text, '(?im)^(?:#|//).*?ver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})')
+        if ($m.Success) { return [version]$m.Groups[1].Value }
+    } catch {}
+    return [version]'0.0.0'
+}
+
+function Normalize([byte[]]$Bytes, [string]$Name, [string]$Type) {
+    if ($Type -eq 'json') { return $Bytes }
+    $text = [Text.Encoding]::UTF8.GetString($Bytes)
+    $text = $text.TrimStart([char]0xFEFF).Trim()
+    if (-not $text.StartsWith('{')) { return $Bytes }
+    try { $json = $text | ConvertFrom-Json -ErrorAction Stop } catch { return $Bytes }
+    if ($json -is [string]) { return $Bytes }
+    $value = $null
+    foreach ($key in @('powershell','script','source','code','content','text','body')) {
+        if ($json.PSObject.Properties.Name -contains $key) {
+            if ($json.$key -is [string]) { $value = [string]$json.$key; break }
+        }
+    }
+    $language = ([string]$json.language).ToLowerInvariant()
+    $encoding = ([string]$json.encoding).ToLowerInvariant()
+    $explicitPowerShell = $language -in @('powershell','powershell-script','powershellscript','ps1','pwsh')
+    if ($null -eq $value -and $explicitPowerShell -and ($json.PSObject.Properties.Name -contains 'commands')) {
+        $items = @($json.commands)
+        $value = ($items | ForEach-Object { [string]$_ }) -join "`r`n"
+    }
+    if ($null -eq $value) { return $Bytes }
+    $script:normAttempted = $true
+    try {
+        if ($encoding -eq 'base64' -or ([string]$json.content_encoding).ToLowerInvariant() -eq 'base64') {
+            $out = [Convert]::FromBase64String($value)
+        } else {
+            $out = [Text.Encoding]::UTF8.GetBytes($value)
+        }
+        $script:normOK = $true
+        [void]$script:normFiles.Add($Name)
+        Log ('NORMALIZE SUCCESS ' + $Name + ' -> native ' + $Type)
+        return $out
+    } catch {
+        $script:normFail = $true
+        Log ('NORMALIZE FAILED ' + $Name + ': ' + $_.Exception.Message)
+        return $Bytes
+    }
+}
+
+function Valid([hashtable]$Spec, [byte[]]$Bytes) {
+    try {
+        if ($Bytes.Length -lt 20) { throw 'Artifact unexpectedly small.' }
+        $text = [Text.Encoding]::UTF8.GetString($Bytes)
+        if ($Spec.Type -eq 'script') { [void][scriptblock]::Create($text) }
+        elseif ($Spec.Type -eq 'json') { [void]($text | ConvertFrom-Json -ErrorAction Stop) }
+        elseif ($Spec.Type -eq 'js' -or $Spec.Type -eq 'text') { if ($text.Length -lt 20) { throw 'Artifact unexpectedly small.' } }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function DownloadBytes([hashtable]$Spec) {
+    $url = $ArtifactBase + $Spec.Remote + '?cb=' + [DateTime]::UtcNow.Ticks
+    Log ('DOWNLOAD START ' + $Spec.Remote)
+    $request = [Net.HttpWebRequest]::Create($url)
+    $request.Method = 'GET'
+    $request.Timeout = 45000
+    $request.ReadWriteTimeout = 45000
+    $request.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+    $request.UserAgent = 'Untrapped-UARD/1.0'
+    $response = $null
+    $stream = $null
+    $memory = $null
+    try {
+        $response = [Net.HttpWebResponse]$request.GetResponse()
+        if ([int]$response.StatusCode -ne 200) { throw ('Middleman HTTP ' + [int]$response.StatusCode) }
+        $stream = $response.GetResponseStream()
+        $memory = New-Object IO.MemoryStream
+        $stream.CopyTo($memory)
+        $bytes = $memory.ToArray()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($memory) { $memory.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+    $bytes = Normalize $bytes $Spec.Remote $Spec.Type
+    if (-not (Valid $Spec $bytes)) { throw ('Artifact validation failed: ' + $Spec.Remote) }
+    $expected = [string]$response.Headers['X-Untrapped-SHA256']
+    if (-not [string]::IsNullOrWhiteSpace($expected)) {
+        if ($expected.ToLowerInvariant() -ne (HashBytes $bytes)) { throw ('Middleman SHA-256 mismatch: ' + $Spec.Remote) }
+    }
+    Log ('DOWNLOAD OK ' + $Spec.Remote + ' SHA256=' + (HashBytes $bytes))
+    return $bytes
+}
+
+function RepairOne([string]$Base, [hashtable]$Spec, [string]$Label) {
+    $path = Join-Path $Base $Spec.Rel
+    Log ('CHECK ' + $Label + '/' + $Spec.Rel)
+    $remote = $null
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        try {
+            $remote = DownloadBytes $Spec
+            break
+        } catch {
+            $lastError = $_.Exception.Message
+            Log ('RETRY ' + $Spec.Remote + ' ' + $attempt + '/20: ' + $lastError)
+            if ($attempt -lt 20) { Start-Sleep -Milliseconds 1500 }
+        }
+    }
+    if ($null -eq $remote) {
+        if (Test-Path -LiteralPath $path) {
+            $script:unknown = $true
+            Log ('UNVERIFIED ' + $Label + '/' + $Spec.Rel + '; local copy retained. Last error: ' + $lastError)
+        } else {
+            $script:failed = $true
+            Log ('FAIL ' + $Label + '/' + $Spec.Rel + '; required artifact missing. Last error: ' + $lastError)
+        }
+        return
+    }
+    $same = $false
+    if (Test-Path -LiteralPath $path) {
+        try { $same = (HashBytes ([IO.File]::ReadAllBytes($path))) -eq (HashBytes $remote) } catch {}
+    }
+    if ($same) { Log ('CURRENT ' + $Label + '/' + $Spec.Rel); return }
+    Log ('UPDATE NEEDED ' + $Label + '/' + $Spec.Rel)
+    $tmp = $null
+    try {
+        if (-not (Test-Path $BackupRoot)) { New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null }
+        if (Test-Path -LiteralPath $path) {
+            $backup = Join-Path $BackupRoot ((Get-Date -Format yyyyMMdd-HHmmss) + '-' + $Label.Replace('/','_') + '-' + $Spec.Rel.Replace('/','_') + '.bak')
+            Copy-Item -LiteralPath $path -Destination $backup -Force
+            Log ('BACKUP ' + $backup)
+        }
+        $parent = Split-Path $path -Parent
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        $tmp = $path + '.tmp-' + [guid]::NewGuid().ToString('N')
+        [IO.File]::WriteAllBytes($tmp, $remote)
+        if ((HashBytes ([IO.File]::ReadAllBytes($tmp))) -ne (HashBytes $remote)) { throw 'Pre-install SHA-256 mismatch.' }
+        if (-not (Valid $Spec ([IO.File]::ReadAllBytes($tmp)))) { throw 'Pre-install validation failed.' }
+        Move-Item -LiteralPath $tmp -Destination $path -Force
+        $tmp = $null
+        if ((HashBytes ([IO.File]::ReadAllBytes($path))) -ne (HashBytes $remote)) { throw 'Post-install SHA-256 mismatch.' }
+        Log ('REPAIRED+VERIFIED ' + $Label + '/' + $Spec.Rel)
+        $script:changed = $true
+    } catch {
+        $script:failed = $true
+        Log ('FAIL ' + $Label + '/' + $Spec.Rel + ': ' + $_.Exception.Message)
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function FindBraveCopies {
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $roots = @()
+    if (Test-Path $ExtensionRoot) { $roots += $ExtensionRoot }
+    $roots += @(
+        (Join-Path $env:USERPROFILE 'Desktop'),
+        (Join-Path $env:USERPROFILE 'Documents'),
+        (Join-Path $env:USERPROFILE 'Downloads')
+    )
+    foreach ($base in $roots) {
+        if (-not (Test-Path $base)) { continue }
+        try {
+            $manifests = Get-ChildItem -LiteralPath $base -Filter 'manifest.json' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 100
+            foreach ($manifest in @($manifests)) {
+                try {
+                    $obj = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
+                    if ([string]$obj.name -eq 'Untrapped') { [void]$found.Add($manifest.Directory.FullName) }
+                } catch {}
+            }
+        } catch {}
+    }
+    $userData = Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data'
+    if (Test-Path $userData) {
+        try {
+            $manifests = Get-ChildItem -LiteralPath $userData -Filter 'manifest.json' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 500
+            foreach ($manifest in @($manifests)) {
+                try {
+                    $obj = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
+                    if ([string]$obj.name -eq 'Untrapped') { [void]$found.Add($manifest.Directory.FullName) }
+                } catch {}
+            }
+        } catch {}
+    }
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^brave' -and $_.CommandLine -match '(?i)--load-extension=' })) {
+        foreach ($match in [regex]::Matches([string]$process.CommandLine, '--load-extension=(?:"([^"]+)"|([^\s]+))')) {
+            $dir = $match.Groups[1].Value
+            if ([string]::IsNullOrWhiteSpace($dir)) { $dir = $match.Groups[2].Value }
+            if (Test-Path $dir) {
+                $manifest = Join-Path $dir 'manifest.json'
+                if (Test-Path $manifest) {
+                    try { if ([string]((Get-Content $manifest -Raw | ConvertFrom-Json).name) -eq 'Untrapped') { [void]$found.Add((Resolve-Path $dir).Path) } } catch {}
+                }
+            }
+        }
+    }
+    return @($found | Sort-Object -Unique)
+}
+
+function RestartOwnedProcesses {
+    if (-not $changed) { Log 'RESTART NOT NEEDED'; return }
+    Log 'RESTART Checking Untrapped-owned packet/control processes only.'
+    foreach ($pattern in @('*packet-filter.ps1*','*ultra-mode.ps1*')) {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like $pattern })) {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            Log ('STOP PID ' + $process.ProcessId)
+        }
+    }
+    Start-Sleep -Milliseconds 800
+    foreach ($name in @('packet-filter.ps1','ultra-mode.ps1')) {
+        $path = Join-Path $Root $name
+        if (Test-Path $path) {
+            Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$path) -WorkingDirectory $Root -Verb RunAs -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Log ('START ' + $name)
+        }
+    }
+    Log 'RESTART COMPLETE'
+}
+
+$Core = @(
+    @{Remote='ultra-mode/INSTALL-PACKET-FILTER.ps1';Rel='INSTALL-PACKET-FILTER.ps1';Type='script'},
+    @{Remote='ultra-mode/INSTALL-ULTRA-MODE.ps1';Rel='INSTALL-ULTRA-MODE.ps1';Type='script'},
+    @{Remote='ultra-mode/config.json';Rel='config.json';Type='json'},
+    @{Remote='ultra-mode/create-override.ps1';Rel='create-override.ps1';Type='script'},
+    @{Remote='ultra-mode/generate-keys.ps1';Rel='generate-keys.ps1';Type='script'},
+    @{Remote='ultra-mode/packet-filter.ps1';Rel='packet-filter.ps1';Type='script'},
+    @{Remote='ultra-mode/self-repair.ps1';Rel='self-repair.ps1';Type='script'},
+    @{Remote='ultra-mode/status-untrapped.ps1';Rel='status-untrapped.ps1';Type='script'},
+    @{Remote='ultra-mode/test-untrapped.ps1';Rel='test-untrapped.ps1';Type='script'},
+    @{Remote='ultra-mode/ultra-mode.ps1';Rel='ultra-mode.ps1';Type='script'},
+    @{Remote='ultra-mode/verify-override.ps1';Rel='verify-override.ps1';Type='script'}
+)
+$Ext = @(
+    @{Remote='manifest.json';Rel='manifest.json';Type='json'},
+    @{Remote='background.js';Rel='background.js';Type='js'},
+    @{Remote='content.js';Rel='content.js';Type='js'},
+    @{Remote='popup.html';Rel='popup.html';Type='text'},
+    @{Remote='popup.js';Rel='popup.js';Type='js'},
+    @{Remote='bootstrap.bundle.min.js';Rel='bootstrap.bundle.min.js';Type='js'},
+    @{Remote='assets/untrapped.png';Rel='assets/untrapped.png';Type='binary'},
+    @{Remote='assets/untrapped.svg';Rel='assets/untrapped.svg';Type='binary'}
+)
+
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Log ('=== ' + $UARDName + ' ver ' + $UARDVersion + ' SELF-REPAIR BEGIN ===')
+    Log 'TRUE BASELINE 1.0.0: retained or upgraded, never removed.'
+    Log 'MIDDLEMAN: Railway update broker is the comparison/update source.'
+    $brave = @(FindBraveCopies)
+    if ($brave.Count -gt 0) { Log ('BRAVE COPIES DETECTED: ' + $brave.Count) }
+    else { Log 'BRAVE UNTRAPPED COPY: NOT FOUND; informational only.' }
+    foreach ($spec in $Ext) { RepairOne $ExtensionRoot $spec 'extension-source' }
+    foreach ($spec in $Core) { RepairOne $Root $spec 'ultra-mode' }
+    foreach ($copy in $brave) { foreach ($spec in $Ext) { RepairOne $copy $spec 'brave-extension' } }
+    foreach ($native in @('WinDivert.dll','WinDivert64.sys')) {
+        $nativePath = Join-Path $Root $native
+        if (Test-Path $nativePath) { Log ('NATIVE OK ' + $native) }
+        else { $failed = $true; Log ('FAIL MISSING ' + $native) }
+    }
+    if ($normFail) { $normalization = 'UNSUCCESSFUL' }
+    elseif ($normOK) { $normalization = 'SUCCESSFUL' }
+    else { $normalization = 'NOT NEEDED' }
+    Log ('NORMALIZATION RESULT: ' + $normalization)
+    if ($normFiles.Count -gt 0) { Log ('NORMALIZED FILES: ' + ($normFiles -join ', ')) }
+    RestartOwnedProcesses
+    if ($failed) { $diagnosis = 'REPAIR INCOMPLETE' }
+    elseif ($unknown) { $diagnosis = 'VERIFICATION INCOMPLETE' }
+    elseif ($changed) { $diagnosis = 'REPAIR SUCCESS' }
+    else { $diagnosis = 'NO REPAIR REQUIRED' }
+    [void]$log.Add('')
+    [void]$log.Add('[DIAGNOSIS] ' + $diagnosis)
+    [void]$log.Add('IDENTITY: ' + $UARDName + ' ver ' + $UARDVersion)
+    [void]$log.Add('TRUE BASELINE: 1.0.0 - RETAINED/UPGRADED, NEVER REMOVED')
+    [void]$log.Add('MIDDLEMAN: Railway update broker backed by canonical GitHub main')
+    [void]$log.Add('BRAVE COPIES DETECTED: ' + $brave.Count)
+    [void]$log.Add('NORMALIZATION: ' + $normalization)
+    [void]$log.Add('PROTECTED: Firewall/WFP/DNS/routes/Hosts/proxy/adapters/VPN/override policy are never modified.')
+    $log | Set-Content -LiteralPath $Report -Encoding UTF8
+    Log '=== UARD SELF-REPAIR END ==='
+    if ($changed -or $failed -or $unknown) { Start-Process notepad.exe -ArgumentList @($Report) -ErrorAction SilentlyContinue }
+    if ($failed) { exit 1 }
+    if ($unknown) { exit 2 }
+    exit 0
+} catch {
+    Log ('FAIL FATAL ' + $_.Exception.Message)
+    @($UARDName + ' ver ' + $UARDVersion,'UARD FAILURE',$_.Exception.Message,'TRUE BASELINE: 1.0.0') | Set-Content -LiteralPath $Report -Encoding UTF8
+    Start-Process notepad.exe -ArgumentList @($Report) -ErrorAction SilentlyContinue
+    exit 1
+}
