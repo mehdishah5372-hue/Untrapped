@@ -1,12 +1,12 @@
 # UAUD (Untrapped Auto-Update & Diagnostics) ver 1.0.0 - TRUE BASELINE
-# Canonical visible launcher. Runs UARD through the dedicated 000-999 audit bridge.
+# Visible launcher. UARD itself is pinned to the 000-999 audit middleman.
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
-$Bridge=Join-Path $Root 'UARD-000-999.ps1'
-if(-not(Test-Path -LiteralPath $Bridge)){throw "UARD-000-999 bridge not found: $Bridge"}
+$UARD=Join-Path $Root 'self-repair.ps1'
+if(-not(Test-Path -LiteralPath $UARD)){throw "UARD not found: $UARD"}
 Write-Host 'UAUD (Untrapped Auto-Update & Diagnostics) ver 1.0.0 - TRUE BASELINE'
 Write-Host 'Launching UARD through the 000-999 audit middleman...'
-$escaped=$Bridge.Replace("'","''")
+$escaped=$UARD.Replace("'","''")
 $cmd="& '$escaped'"
 $p=Start-Process -FilePath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-Command',$cmd) -WorkingDirectory $Root -WindowStyle Normal -PassThru
 Write-Host ('UARD PID: '+$p.Id)
