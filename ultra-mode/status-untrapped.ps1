@@ -46,7 +46,7 @@ function TestTarget443([string]$Name, [bool]$ExpectedBlocked) {
         $tcp = Test-NetConnection -ComputerName $Name -Port 443 -WarningAction SilentlyContinue
         if ($tcp.TcpTestSucceeded) {
             if ($ExpectedBlocked) {
-                Report ('[WARN] BLOCK TEST: ' + $Name + ' is REACHABLE on TCP 443; expected BLOCKED; RemoteAddress=' + [string]$tcp.RemoteAddress)
+                Report ('[FAIL] BLOCK TEST: ' + $Name + ' is REACHABLE on TCP 443; expected BLOCKED; RemoteAddress=' + [string]$tcp.RemoteAddress)
                 Problem ($Name + ' is reachable while it should be blocked.')
             } else {
                 Report ('[OK] BLOCK TEST: ' + $Name + ' is reachable on TCP 443; expected ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress)
@@ -55,12 +55,17 @@ function TestTarget443([string]$Name, [bool]$ExpectedBlocked) {
             if ($ExpectedBlocked) {
                 Report ('[OK] BLOCK TEST: ' + $Name + ' is BLOCKED on TCP 443 as expected; RemoteAddress=' + [string]$tcp.RemoteAddress)
             } else {
-                Report ('[WARN] BLOCK TEST: ' + $Name + ' failed TCP 443 but should be ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress)
+                Report ('[FAIL] BLOCK TEST: ' + $Name + ' failed TCP 443 but should be ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress)
                 Problem ($Name + ' is unreachable while it should be allowed.')
             }
         }
     } catch {
-        Report ('[WARN] BLOCK TEST: ' + $Name + ' test error: ' + $_.Exception.Message)
+        if ($ExpectedBlocked) {
+            Report ('[OK] BLOCK TEST: ' + $Name + ' could not establish TCP 443 as expected for a blocked target.')
+        } else {
+            Report ('[WARN] BLOCK TEST: ' + $Name + ' test error: ' + $_.Exception.Message)
+            Problem ($Name + ' blocking test encountered an error while it should be allowed.')
+        }
     }
 }
 
@@ -124,14 +129,14 @@ $control = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where
 if ($packet.Count -gt 0) {
     Report '[OK] Packet filter process: RUNNING'
 } else {
-    Report '[WARN] Packet filter process: NOT RUNNING'
+    Report '[FAIL] Packet filter process: NOT RUNNING'
     Problem 'packet-filter.ps1 is not running.'
 }
 
 if ($control.Count -gt 0) {
     Report '[OK] Control plane process: RUNNING'
 } else {
-    Report '[WARN] Control plane process: NOT RUNNING'
+    Report '[FAIL] Control plane process: NOT RUNNING'
     Problem 'ultra-mode.ps1 is not running.'
 }
 
