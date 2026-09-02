@@ -1,21 +1,14 @@
-"""Untrapped Update Middleman 2.1.0.
+"""Untrapped Update Middleman 3.0.0 - TRUE BASELINE infrastructure.
 
-A conservative, deterministic update broker for Untrapped.
+The middleman is a read/update broker, not a policy engine. It never changes
+Windows networking policy. It only fetches allow-listed repository artifacts,
+normalizes explicitly wrapped source, validates the normalized result, and
+returns exact SHA-256 metadata.
 
-Key guarantees:
-- only explicitly allow-listed artifacts can be fetched;
-- JSON configuration files are preserved exactly;
-- JSON source envelopes can be decoded into PowerShell/JS/text when the target
-  artifact explicitly identifies the source language or the destination is .ps1;
-- several common JSON representations are normalized without inventing network
-  policy or Windows configuration changes;
-- normalized bytes are hashed after translation and returned with verification
-  metadata;
-- the 1.0.0 baseline floor remains protected for explicitly versioned PowerShell
-  artifacts;
-- unversioned legacy PowerShell artifacts are never treated as version 0.0.0
-  downgrades;
-- ordinary JSON is never silently converted into PowerShell.
+Important design rule: GET /v1/artifact/* MUST NOT reject an unversioned legacy
+PowerShell file with HTTP 409. Baseline protection belongs to the updater,
+while the middleman records the detected version for audit. This eliminates
+false downgrade detections caused by comments, JSON envelopes, or legacy files.
 """
 from __future__ import annotations
 
@@ -31,127 +24,99 @@ from typing import Any
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
 
+VERSION = "3.0.0"
+PROTOCOL = 3
+BASELINE = "1.0.0"
+MIN_BASELINE = (1, 0, 0)
 UPSTREAM = os.environ.get(
     "UNTRAPPED_UPSTREAM",
     "https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/",
 )
-MIN_BASELINE = (1, 0, 0)
-PROTOCOL = 2
-VERSION = "2.1.0"
 PORT = int(os.environ.get("PORT", "8080"))
-CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))
-MAX_ARTIFACT_BYTES = int(os.environ.get("MAX_ARTIFACT_BYTES", str(8 * 1024 * 1024)))
+CACHE_TTL = max(0, int(os.environ.get("CACHE_TTL", "30")))
+MAX_BYTES = int(os.environ.get("MAX_ARTIFACT_BYTES", str(8 * 1024 * 1024)))
 
 ARTIFACTS = [
-    "manifest.json",
-    "background.js",
-    "content.js",
-    "popup.html",
-    "popup.js",
-    "bootstrap.bundle.min.js",
-    "assets/untrapped.png",
-    "assets/untrapped.svg",
-    "VERSION.txt",
-    "ultra-mode/INSTALL-PACKET-FILTER.ps1",
-    "ultra-mode/INSTALL-ULTRA-MODE.ps1",
-    "ultra-mode/config.json",
-    "ultra-mode/create-override.ps1",
-    "ultra-mode/generate-keys.ps1",
-    "ultra-mode/packet-filter.ps1",
-    "ultra-mode/self-repair.ps1",
-    "ultra-mode/status-untrapped.ps1",
-    "ultra-mode/test-untrapped.ps1",
-    "ultra-mode/ultra-mode.ps1",
-    "ultra-mode/verify-override.ps1",
+    "manifest.json", "background.js", "content.js", "popup.html", "popup.js",
+    "bootstrap.bundle.min.js", "assets/untrapped.png", "assets/untrapped.svg",
+    "VERSION.txt", "ultra-mode/INSTALL-PACKET-FILTER.ps1",
+    "ultra-mode/INSTALL-ULTRA-MODE.ps1", "ultra-mode/config.json",
+    "ultra-mode/create-override.ps1", "ultra-mode/generate-keys.ps1",
+    "ultra-mode/packet-filter.ps1", "ultra-mode/self-repair.ps1",
+    "ultra-mode/status-untrapped.ps1", "ultra-mode/test-untrapped.ps1",
+    "ultra-mode/ultra-mode.ps1", "ultra-mode/verify-override.ps1",
 ]
-ALLOW = set(ARTIFACTS)
-
+ALLOW = frozenset(ARTIFACTS)
 _cache: dict[str, tuple[float, tuple[bytes, bool, dict[str, Any]]]] = {}
 _cache_lock = threading.Lock()
 
 
 class TranslationError(ValueError):
-    """Raised when a JSON representation cannot be safely normalized."""
+    pass
 
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def version_of(data: bytes) -> tuple[int, int, int]:
-    """Read only an explicit source version marker from the file header.
-
-    Crucially, arbitrary comments elsewhere in a script cannot manufacture a
-    downgrade. Unversioned legacy scripts return (0, 0, 0) and are allowed.
-    """
-    text = data.decode("utf-8", "replace")
-    head = "\n".join(line for line in text.splitlines() if line.strip())
-    head = "\n".join(head.splitlines()[:10])
-    match = re.search(
-        r"(?im)^(?:#|//)\s*[^\r\n]*?\bver(?:sion)?\s+([0-9]+(?:\.[0-9]+){2})\b",
-        head,
-    )
-    if not match:
+def version_tuple(text: str) -> tuple[int, int, int]:
+    """Detect ONLY an explicit version marker in the first 12 non-empty lines."""
+    head = "\n".join([x for x in text.splitlines() if x.strip()][:12])
+    # Deliberately require a comment marker and a complete dotted version.
+    m = re.search(r"(?im)^(?:#|//)\s*[^\r\n]*?\bver(?:sion)?\s+([0-9]+\.[0-9]+\.[0-9]+)\b", head)
+    if not m:
         return (0, 0, 0)
     try:
-        return tuple(int(x) for x in match.group(1).split("."))
-    except (TypeError, ValueError):
+        return tuple(int(x) for x in m.group(1).split("."))
+    except Exception:
         return (0, 0, 0)
 
 
-def dotted_version(value: tuple[int, int, int]) -> str:
-    return ".".join(str(x) for x in value)
+def dotted(v: tuple[int, int, int]) -> str:
+    return ".".join(map(str, v))
 
 
-def clean_text(value: str) -> str:
-    return value.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n").strip() + "\n"
+def clean_text(text: str) -> str:
+    return text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n").strip() + "\n"
 
 
-def looks_like_powershell(text: str) -> bool:
-    markers = [
-        r"\$[A-Za-z_][A-Za-z0-9_]*",
-        r"\bparam\s*\(",
-        r"\bfunction\s+[A-Za-z_][A-Za-z0-9_-]*",
-        r"\b(?:Get|Set|Start|Stop|Test|Invoke|New|Remove|Copy|Move|Write)-[A-Za-z]",
-        r"\[System\.",
-        r"\[Security\.",
-        r"\$env:",
-    ]
-    return any(re.search(pattern, text, re.I) for pattern in markers)
-
-
-def basic_powershell_lint(text: str) -> list[str]:
-    """Cheap server-side safety/lint checks independent of PowerShell availability."""
+def ps_lint(text: str) -> list[str]:
     errors: list[str] = []
     if not text.strip():
-        errors.append("translated PowerShell is empty")
-        return errors
-    if len(text.encode("utf-8")) > MAX_ARTIFACT_BYTES:
-        errors.append("translated PowerShell exceeds artifact size limit")
+        return ["PowerShell payload is empty"]
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        errors.append("PowerShell payload exceeds size limit")
     if "\x00" in text:
-        errors.append("translated PowerShell contains NUL bytes")
-    if text.count("{") != text.count("}"):
-        errors.append("PowerShell brace count is unbalanced")
-    if text.count("(") != text.count(")"):
-        errors.append("PowerShell parenthesis count is unbalanced")
-    if text.count("[") != text.count("]"):
-        errors.append("PowerShell bracket count is unbalanced")
+        errors.append("PowerShell payload contains NUL bytes")
+    pairs = (("{", "}"), ("(", ")"), ("[", "]"))
+    for left, right in pairs:
+        if text.count(left) != text.count(right):
+            errors.append("PowerShell delimiter count is unbalanced: " + left + right)
     return errors
 
 
-def decode_json_text(raw: bytes) -> Any:
-    text = raw.decode("utf-8-sig", "strict").strip()
-    if not text:
-        raise TranslationError("JSON source is empty")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise TranslationError("invalid JSON: " + str(exc)) from exc
+def json_to_ps(value: Any, indent: int = 0) -> str:
+    pad = " " * indent
+    if value is None: return "$null"
+    if value is True: return "$true"
+    if value is False: return "$false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool): return str(value).lower()
+    if isinstance(value, str): return "'" + value.replace("'", "''") + "'"
+    if isinstance(value, list):
+        if not value: return "@()"
+        return "@(\n" + ",\n".join(" "*(indent+4)+json_to_ps(x, indent+4) for x in value) + "\n" + pad + ")"
+    if isinstance(value, dict):
+        if not value: return "@{}"
+        rows = []
+        for k, v in value.items():
+            rows.append(" "*(indent+4) + "'" + str(k).replace("'", "''") + "' = " + json_to_ps(v, indent+4))
+        return "@{\n" + ";\n".join(rows) + "\n" + pad + "}"
+    raise TranslationError("unsupported JSON value")
 
 
-def decode_payload(value: Any, encoding: str = "") -> str:
+def decode_payload(value: Any, encoding: str) -> str:
     if not isinstance(value, str):
-        raise TranslationError("source payload is not a string")
+        raise TranslationError("source payload must be a string")
     if encoding.lower().replace("-", "") == "base64":
         try:
             return base64.b64decode(value, validate=True).decode("utf-8-sig")
@@ -160,312 +125,178 @@ def decode_payload(value: Any, encoding: str = "") -> str:
     return value
 
 
-def json_value_to_powershell(value: Any, indent: int = 0) -> str:
-    """Deterministically render JSON data as a PowerShell literal.
-
-    This is deliberately a data-to-literal translator, not an arbitrary command
-    generator. It is used only when an envelope explicitly asks for PowerShell
-    and contains a data object rather than source text.
-    """
-    pad = " " * indent
-    if value is None:
-        return "$null"
-    if value is True:
-        return "$true"
-    if value is False:
-        return "$false"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
-    if isinstance(value, list):
-        if not value:
-            return "@()"
-        inner = ",\n".join(" " * (indent + 4) + json_value_to_powershell(v, indent + 4) for v in value)
-        return "@(\n" + inner + "\n" + pad + ")"
-    if isinstance(value, dict):
-        if not value:
-            return "@{}"
-        rows = []
-        for key, item in value.items():
-            key_text = str(key).replace("'", "''")
-            rows.append(" " * (indent + 4) + "'" + key_text + "' = " + json_value_to_powershell(item, indent + 4))
-        return "@{\n" + ";\n".join(rows) + "\n" + pad + "}"
-    raise TranslationError("unsupported JSON value type")
-
-
-def extract_explicit_source(obj: dict[str, Any]) -> tuple[str | None, bool, str]:
-    """Return (source text, translated, reason)."""
-    encoding = str(obj.get("encoding", obj.get("content_encoding", "")))
-    language = str(
-        obj.get("language", obj.get("lang", obj.get("type", obj.get("target", ""))))
-    ).lower()
-    explicit_ps = language in {
-        "powershell",
-        "powershell-script",
-        "powershellscript",
-        "ps1",
-        "pwsh",
-    }
-
-    source_keys = ("powershell", "script", "source", "code", "content", "text", "body")
-    for key in source_keys:
-        if key in obj:
-            value = obj[key]
-            if isinstance(value, str):
-                text = decode_payload(value, encoding)
-                return clean_text(text), True, "explicit source envelope"
-            if explicit_ps and isinstance(value, (dict, list, int, float, bool)):
-                rendered = json_value_to_powershell(value)
-                return clean_text("# JSON-to-PowerShell data translation\n$data = " + rendered), True, "explicit PowerShell data payload"
-            raise TranslationError("source key '" + key + "' must contain text")
-
-    if explicit_ps and any(k in obj for k in ("commands", "statements")):
-        commands = obj.get("commands", obj.get("statements"))
-        if not isinstance(commands, list) or not all(isinstance(x, str) for x in commands):
-            raise TranslationError("commands/statements must be a list of strings")
-        rendered = "\n".join(clean_text(x).rstrip("\n") for x in commands)
-        return clean_text(rendered), True, "explicit PowerShell command list"
-
-    if explicit_ps and "data" in obj:
-        rendered = json_value_to_powershell(obj["data"])
-        return clean_text("# JSON-to-PowerShell data translation\n$data = " + rendered), True, "explicit PowerShell data object"
-
-    return None, False, "no explicit source representation"
-
-
-def normalize(data: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
-    """Normalize an upstream artifact and produce an audit record."""
+def normalize(raw: bytes, path: str) -> tuple[bytes, bool, dict[str, Any]]:
     meta: dict[str, Any] = {
-        "mode": "unchanged",
-        "input_sha256": sha256(data),
-        "output_sha256": sha256(data),
-        "translated": False,
-        "reason": "not applicable",
+        "input_sha256": sha256(raw), "output_sha256": sha256(raw),
+        "mode": "unchanged", "translated": False, "reason": "already source/text",
     }
-
-    if len(data) > MAX_ARTIFACT_BYTES:
+    if len(raw) > MAX_BYTES:
         raise TranslationError("artifact exceeds size limit")
 
+    # JSON configuration is data. Preserve it byte-for-byte.
     if path.endswith(".json"):
-        try:
-            decode_json_text(data)
-        except TranslationError:
-            meta["reason"] = "JSON preserved unchanged; validation failed"
-            return data, False, meta
-        meta["reason"] = "JSON configuration preserved unchanged"
-        return data, False, meta
+        try: json.loads(raw.decode("utf-8-sig", "strict"))
+        except Exception as exc: raise TranslationError("invalid JSON configuration: " + str(exc)) from exc
+        meta["reason"] = "JSON configuration preserved byte-for-byte"
+        return raw, False, meta
 
-    stripped = data.decode("utf-8", "replace").lstrip("\ufeff").strip()
+    text = raw.decode("utf-8-sig", "strict")
+    stripped = text.strip()
     if not stripped.startswith(("{", "[", '"')):
-        meta["reason"] = "artifact is already source/text"
-        return data, False, meta
+        return raw, False, meta
 
     try:
         obj = json.loads(stripped)
     except Exception:
-        meta["reason"] = "not valid JSON; preserved as source/text"
-        return data, False, meta
+        meta["reason"] = "not a JSON source wrapper; preserved as source/text"
+        return raw, False, meta
 
+    language = ""
+    if isinstance(obj, dict):
+        language = str(obj.get("language", obj.get("lang", obj.get("target", obj.get("type", ""))))).lower()
+    explicit_ps = language in {"powershell", "powershell-script", "powershellscript", "ps1", "pwsh"}
+
+    source: str | None = None
+    reason = ""
     if isinstance(obj, str) and path.endswith(".ps1"):
-        translated = clean_text(obj)
-        errors = basic_powershell_lint(translated)
-        if errors:
-            raise TranslationError("; ".join(errors))
-        meta.update({
-            "mode": "json-string-to-powershell",
-            "translated": True,
-            "reason": "top-level JSON string targeted to .ps1",
-        })
-        meta["output_sha256"] = sha256(translated.encode("utf-8"))
-        return translated.encode("utf-8"), True, meta
-
-    if not isinstance(obj, dict):
+        source = obj
+        reason = "top-level JSON string targeted to .ps1"
+    elif isinstance(obj, dict):
+        encoding = str(obj.get("encoding", obj.get("content_encoding", "")))
+        for key in ("powershell", "script", "source", "code", "content", "text", "body"):
+            if key in obj:
+                value = obj[key]
+                if isinstance(value, str):
+                    source = decode_payload(value, encoding)
+                    reason = "explicit source envelope: " + key
+                    break
+                if explicit_ps and isinstance(value, (dict, list, int, float, bool)):
+                    source = "# JSON-to-PowerShell data translation\n$data = " + json_to_ps(value)
+                    reason = "explicit PowerShell data payload: " + key
+                    break
+                raise TranslationError("source key '" + key + "' must contain text")
+        if source is None and explicit_ps and any(k in obj for k in ("commands", "statements")):
+            commands = obj.get("commands", obj.get("statements"))
+            if not isinstance(commands, list) or not all(isinstance(x, str) for x in commands):
+                raise TranslationError("commands/statements must be a list of strings")
+            source = "\n".join(x.strip("\r\n") for x in commands)
+            reason = "explicit PowerShell command list"
+        if source is None and explicit_ps and "data" in obj:
+            source = "# JSON-to-PowerShell data translation\n$data = " + json_to_ps(obj["data"])
+            reason = "explicit PowerShell data object"
+    else:
         meta["reason"] = "ordinary JSON structure; no explicit source envelope"
-        return data, False, meta
+        return raw, False, meta
 
-    source, translated, reason = extract_explicit_source(obj)
     if source is None:
-        meta["reason"] = reason
-        return data, False, meta
+        meta["reason"] = "ordinary JSON structure; no explicit source envelope"
+        return raw, False, meta
 
     if path.endswith(".ps1"):
-        errors = basic_powershell_lint(source)
-        if errors:
-            raise TranslationError("; ".join(errors))
-        if not looks_like_powershell(source):
-            if not source.lstrip().startswith("# JSON-to-PowerShell"):
-                raise TranslationError("explicit PowerShell payload does not resemble PowerShell")
+        source = clean_text(source)
+        errors = ps_lint(source)
+        if errors: raise TranslationError("; ".join(errors))
+        # A generated data literal is inherently PowerShell. For source text,
+        # require at least one normal PowerShell marker to catch accidental JSON.
+        generated = source.lstrip().startswith("# JSON-to-PowerShell")
+        markers = (r"\$[A-Za-z_]", r"\bfunction\s+", r"\b(?:Get|Set|Start|Stop|Test|Invoke|New|Remove|Write)-", r"\[System\.")
+        if not generated and not any(re.search(p, source, re.I) for p in markers):
+            raise TranslationError("explicit PowerShell payload does not resemble PowerShell")
     else:
-        if not translated:
-            return data, False, meta
+        source = clean_text(source)
 
-    output = source.encode("utf-8")
-    meta.update({
-        "mode": "json-envelope-translation",
-        "translated": True,
-        "reason": reason,
-        "output_sha256": sha256(output),
-    })
-    return output, True, meta
+    out = source.encode("utf-8")
+    meta.update({"output_sha256": sha256(out), "mode": "json-envelope-translation", "translated": True, "reason": reason})
+    return out, True, meta
 
 
 def fetch_upstream(path: str) -> bytes:
-    req = Request(
-        UPSTREAM + path + "?middleman=" + str(time.time_ns()),
-        headers={"User-Agent": "Untrapped-Update-Middleman/2.1.0"},
-    )
+    req = Request(UPSTREAM + path + "?middleman=" + str(time.time_ns()), headers={"User-Agent": "Untrapped-Middleman/3.0"})
     with urlopen(req, timeout=30) as response:
-        data = response.read(MAX_ARTIFACT_BYTES + 1)
-        if len(data) > MAX_ARTIFACT_BYTES:
-            raise TranslationError("upstream artifact exceeds size limit")
-        return data
+        data = response.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES: raise TranslationError("upstream artifact exceeds size limit")
+    return data
 
 
-def get_artifact(path: str) -> tuple[bytes, bool, dict[str, Any]]:
+def artifact(path: str) -> tuple[bytes, bool, dict[str, Any]]:
     now = time.time()
     with _cache_lock:
-        item = _cache.get(path)
-        if item and now - item[0] < CACHE_TTL:
-            return item[1]
-    raw = fetch_upstream(path)
-    normalized, translated, meta = normalize(raw, path)
-    result = (normalized, translated, meta)
-    with _cache_lock:
-        _cache[path] = (now, result)
+        hit = _cache.get(path)
+        if hit and now - hit[0] < CACHE_TTL: return hit[1]
+    result = normalize(fetch_upstream(path), path)
+    with _cache_lock: _cache[path] = (now, result)
     return result
 
 
-def build_manifest() -> dict[str, Any]:
+def manifest() -> dict[str, Any]:
     entries = []
     for path in ARTIFACTS:
-        data, translated, meta = get_artifact(path)
-        version = version_of(data)
-        entries.append({
-            "path": path,
-            "sha256": sha256(data),
-            "bytes": len(data),
-            "version": dotted_version(version),
-            "normalized": translated,
-            "normalization_mode": meta.get("mode", "unchanged"),
-            "normalization_reason": meta.get("reason", ""),
-            "url": "/v1/artifact/" + path,
-        })
-    return {
-        "service": "Untrapped Update Middleman",
-        "version": VERSION,
-        "protocol": PROTOCOL,
-        "baseline": "1.0.0",
-        "minimum_baseline": "1.0.0",
-        "translation": {
-            "json_to_powershell": True,
-            "explicit_source_only": True,
-            "ordinary_json_preserved": True,
-            "base64_supported": True,
-            "deterministic_data_literals": True,
-            "server_side_basic_lint": True,
-        },
-        "generated_at": int(time.time()),
-        "cache_ttl": CACHE_TTL,
-        "artifacts": entries,
-    }
+        data, translated, meta = artifact(path)
+        ver = dotted(version_tuple(data.decode("utf-8", "replace")))
+        entries.append({"path": path, "sha256": sha256(data), "bytes": len(data), "version": ver,
+                        "normalized": translated, "normalization_mode": meta["mode"],
+                        "normalization_reason": meta["reason"], "url": "/v1/artifact/" + path})
+    return {"service": "Untrapped Update Middleman", "version": VERSION, "protocol": PROTOCOL,
+            "baseline": BASELINE, "minimum_baseline": BASELINE,
+            "baseline_enforcement": "client-side; middleman never rejects unversioned legacy PowerShell reads",
+            "translation": {"json_to_powershell": True, "explicit_source_only": True,
+                             "ordinary_json_preserved": True, "base64_supported": True,
+                             "deterministic_data_literals": True, "server_side_basic_lint": True},
+            "cache_ttl": CACHE_TTL, "artifacts": entries}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "UntrappedMiddleman/2.1.0"
+    server_version = "UntrappedMiddleman/3.0"
 
     def send_json(self, code: int, obj: dict[str, Any]) -> None:
         body = json.dumps(obj, indent=2).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
 
     def do_GET(self) -> None:
         try:
-            clean = self.path.split("?", 1)[0]
-            if clean == "/health":
-                self.send_json(200, {
-                    "ok": True,
-                    "service": "Untrapped Update Middleman",
-                    "version": VERSION,
-                    "baseline": "1.0.0",
-                    "protocol": PROTOCOL,
-                    "cache_ttl": CACHE_TTL,
-                    "translation": "JSON-to-PowerShell explicit-envelope normalization enabled",
-                    "version_detection": "explicit header marker only; unversioned legacy scripts allowed",
-                })
+            path = unquote(self.path.split("?", 1)[0])
+            if path == "/health":
+                self.send_json(200, {"ok": True, "service": "Untrapped Update Middleman", "version": VERSION,
+                                     "protocol": PROTOCOL, "baseline": BASELINE,
+                                     "baseline_enforcement": "client-side", "cache_ttl": CACHE_TTL,
+                                     "translation": "JSON-to-PowerShell explicit-envelope normalization enabled"})
                 return
-
-            if clean == "/v1/manifest":
-                self.send_json(200, build_manifest())
-                return
-
+            if path == "/v1/manifest": self.send_json(200, manifest()); return
             prefix = "/v1/artifact/"
-            if clean.startswith(prefix):
-                path = unquote(clean[len(prefix):])
-                if path not in ALLOW:
-                    self.send_json(404, {"error": "artifact_not_allowlisted"})
-                    return
+            if not path.startswith(prefix): self.send_json(404, {"error": "not_found"}); return
+            name = path[len(prefix):]
+            if name not in ALLOW: self.send_json(404, {"error": "artifact_not_allowlisted"}); return
 
-                data, translated, meta = get_artifact(path)
-                declared_version = version_of(data)
-                # Only an explicit version marker can activate downgrade protection.
-                # Unversioned legacy scripts are not version 0.0.0 downgrades.
-                if (
-                    path.endswith(".ps1")
-                    and declared_version != (0, 0, 0)
-                    and declared_version < MIN_BASELINE
-                ):
-                    self.send_json(409, {
-                        "error": "baseline_downgrade_refused",
-                        "path": path,
-                        "declared_version": dotted_version(declared_version),
-                        "minimum_baseline": "1.0.0",
-                        "version_detection": "explicit header marker only",
-                    })
-                    return
+            data, translated, meta = artifact(name)
+            text = data.decode("utf-8", "replace") if name.endswith(".ps1") else ""
+            detected = version_tuple(text) if text else (0, 0, 0)
+            # NO 409 HERE. Reads are never blocked by an ambiguous/unversioned
+            # marker. The client remains responsible for refusing a true downgrade.
+            if name.endswith(".ps1"):
+                errors = ps_lint(text)
+                if errors:
+                    self.send_json(422, {"error": "powershell_validation_failed", "path": name, "details": errors, "normalization": meta}); return
 
-                if path.endswith(".ps1") and translated:
-                    lint_errors = basic_powershell_lint(data.decode("utf-8", "replace"))
-                    if lint_errors:
-                        self.send_json(422, {
-                            "error": "powershell_translation_failed_validation",
-                            "path": path,
-                            "details": lint_errors,
-                            "normalization": meta,
-                        })
-                        return
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Untrapped-SHA256", sha256(data))
-                self.send_header("X-Untrapped-Input-SHA256", meta.get("input_sha256", ""))
-                self.send_header("X-Untrapped-Normalized", "true" if translated else "false")
-                self.send_header("X-Untrapped-Normalization-Mode", str(meta.get("mode", "unchanged")))
-                self.send_header("X-Untrapped-Baseline", "1.0.0")
-                self.send_header("X-Untrapped-Protocol", str(PROTOCOL))
-                self.send_header("X-Untrapped-Cache-TTL", str(CACHE_TTL))
-                self.send_header("X-Untrapped-Version", dotted_version(declared_version))
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
-
-            self.send_json(404, {"error": "not_found"})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Untrapped-SHA256", sha256(data))
+            self.send_header("X-Untrapped-Input-SHA256", meta.get("input_sha256", ""))
+            self.send_header("X-Untrapped-Normalized", "true" if translated else "false")
+            self.send_header("X-Untrapped-Normalization-Mode", str(meta.get("mode", "unchanged")))
+            self.send_header("X-Untrapped-Normalization-Reason", str(meta.get("reason", ""))[:240])
+            self.send_header("X-Untrapped-Baseline", BASELINE)
+            self.send_header("X-Untrapped-Protocol", str(PROTOCOL))
+            self.send_header("X-Untrapped-Version", dotted(detected))
+            self.send_header("X-Untrapped-Baseline-Decision", "allowed-read")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers(); self.wfile.write(data)
         except TranslationError as exc:
-            self.send_json(422, {
-                "error": "normalization_failed",
-                "detail": str(exc),
-            })
+            self.send_json(422, {"error": "normalization_failed", "detail": str(exc)})
         except Exception as exc:
-            self.send_json(502, {
-                "error": "upstream_unavailable",
-                "detail": str(exc),
-            })
+            self.send_json(502, {"error": "upstream_unavailable", "detail": str(exc)})
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[middleman] " + (fmt % args), flush=True)
@@ -473,6 +304,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print("[middleman] Untrapped Update Middleman", VERSION, "starting on port", PORT, flush=True)
-    print("[middleman] Baseline floor: 1.0.0; cache TTL:", CACHE_TTL, "seconds", flush=True)
+    print("[middleman] Baseline floor:", BASELINE, "(client-side enforcement)", flush=True)
     print("[middleman] JSON-to-PowerShell translation: explicit-envelope mode", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
