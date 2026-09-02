@@ -41,6 +41,29 @@ function CheckFile([string]$Name) {
     }
 }
 
+function TestTarget443([string]$Name, [bool]$ExpectedBlocked) {
+    try {
+        $tcp = Test-NetConnection -ComputerName $Name -Port 443 -WarningAction SilentlyContinue
+        if ($tcp.TcpTestSucceeded) {
+            if ($ExpectedBlocked) {
+                Report ('[WARN] BLOCK TEST: ' + $Name + ' is REACHABLE on TCP 443; expected BLOCKED; RemoteAddress=' + [string]$tcp.RemoteAddress)
+                Problem ($Name + ' is reachable while it should be blocked.')
+            } else {
+                Report ('[OK] BLOCK TEST: ' + $Name + ' is reachable on TCP 443; expected ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress)
+            }
+        } else {
+            if ($ExpectedBlocked) {
+                Report ('[OK] BLOCK TEST: ' + $Name + ' is BLOCKED on TCP 443 as expected; RemoteAddress=' + [string]$tcp.RemoteAddress)
+            } else {
+                Report ('[WARN] BLOCK TEST: ' + $Name + ' failed TCP 443 but should be ALLOWED; RemoteAddress=' + [string]$tcp.RemoteAddress)
+                Problem ($Name + ' is unreachable while it should be allowed.')
+            }
+        }
+    } catch {
+        Report ('[WARN] BLOCK TEST: ' + $Name + ' test error: ' + $_.Exception.Message)
+    }
+}
+
 Report ''
 Report '============================================================'
 Report ' UNTRAPPED ULTRA MODE - READ-ONLY DIAGNOSTIC'
@@ -54,6 +77,7 @@ foreach ($name in @('WinDivert.dll','WinDivert64.sys','config.json','packet-filt
 
 $config = $null
 $active = $false
+$overrideActive = $false
 try {
     $config = Get-Content -Path $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json
     $start = [TimeSpan]::Parse([string]$config.start)
@@ -82,6 +106,7 @@ if (Test-Path $OverridePath) {
     try {
         $until = [DateTime]::Parse((Get-Content $OverridePath -Raw -ErrorAction Stop)).ToUniversalTime()
         if ([DateTime]::UtcNow -lt $until) {
+            $overrideActive = $true
             Report ('[INFO] Override: ACTIVE until ' + $until.ToString('u'))
         } else {
             Report '[INFO] Override: inactive'
@@ -125,26 +150,21 @@ foreach ($name in @('youtube.com','www.youtube.com','ytimg.com','googlevideo.com
     }
 }
 
-try {
-    $tcp = Test-NetConnection -ComputerName 'www.youtube.com' -Port 443 -WarningAction SilentlyContinue
-    if ($tcp.TcpTestSucceeded) {
-        if ($active -and ($packet.Count -gt 0)) {
-            Report ('[WARN] TCP 443: www.youtube.com reachable while block is ACTIVE; this may indicate incomplete filtering; RemoteAddress=' + [string]$tcp.RemoteAddress)
-            Problem 'YouTube TCP 443 is reachable while the scheduled block is active.'
-        } else {
-            Report ('[OK] TCP 443: www.youtube.com reachable; block is not currently expected to prevent it; RemoteAddress=' + [string]$tcp.RemoteAddress)
-        }
-    } else {
-        if ($active -and ($packet.Count -gt 0)) {
-            Report ('[OK] TCP 443: www.youtube.com blocked as expected while schedule is ACTIVE; RemoteAddress=' + [string]$tcp.RemoteAddress)
-        } else {
-            Report ('[WARN] TCP 443: www.youtube.com failed while blocking is not expected; RemoteAddress=' + [string]$tcp.RemoteAddress)
-            Problem 'YouTube TCP 443 connection failed while blocking is not expected.'
-        }
-    }
-} catch {
-    Report ('[WARN] TCP 443 test error: ' + $_.Exception.Message)
+Report ''
+Report 'BLOCK TESTS'
+Report '------------'
+
+$scheduledBlock = ([bool]$config.enabled -and $active -and -not $overrideActive)
+$alwaysBlocked = $true
+if ($config -and $config.alwaysBlockedDomains) {
+    $alwaysBlocked = $true
+} else {
+    $alwaysBlocked = $false
 }
+
+TestTarget443 'www.youtube.com' $scheduledBlock
+TestTarget443 'chatgpt.com' $scheduledBlock
+TestTarget443 'www.crushon.ai' $alwaysBlocked
 
 $hostsPath = 'C:\Windows\System32\drivers\etc\hosts'
 if (Test-Path $hostsPath) {
@@ -191,7 +211,7 @@ Report '============================================================'
 
 $uniqueProblems = @($problems | Sort-Object -Unique)
 if ($uniqueProblems.Count -eq 0) {
-    Report '[HEALTHY] No obvious configuration, process, DNS, or routing fault detected.'
+    Report '[HEALTHY] No obvious configuration, process, DNS, routing, or blocking fault detected.'
 } else {
     foreach ($item in $uniqueProblems) {
         Report ('[CAUSE] ' + $item)
