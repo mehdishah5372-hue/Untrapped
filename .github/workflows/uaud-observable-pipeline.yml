@@ -1,0 +1,48 @@
+name: UAUD Observable Pipeline
+on:
+  push:
+    paths:
+      - 'ultra-mode/**'
+      - '.github/workflows/uaud-observable-pipeline.yml'
+  pull_request:
+    paths:
+      - 'ultra-mode/**'
+      - '.github/workflows/uaud-observable-pipeline.yml'
+  workflow_dispatch:
+jobs:
+  powershell-gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every PowerShell artifact without executing it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $files=Get-ChildItem -LiteralPath ultra-mode -Filter *.ps1 -File -Recurse
+          foreach($f in $files){
+            $tokens=$null;$errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$tokens,[ref]$errors)|Out-Null
+            if(@($errors).Count -gt 0){$errors|ForEach-Object{Write-Error ("$($f.FullName):$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber): $($_.Message)")}}
+            else{Write-Host "PARSE PASS $($f.FullName)"}
+          }
+      - name: ErrorLibrary self-test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          . ./ultra-mode/ErrorLibrary.ps1
+          $a=Get-ErrorFingerprint 'missing closing brace at line 42' 'PARSER'
+          $b=Get-ErrorFingerprint 'missing closing brace at line 99' 'PARSER'
+          if($a -ne $b){throw 'ErrorLibrary fingerprint normalization regression'}
+          $c=Get-ErrorFingerprint 'ordinary status message' 'UNKNOWN'
+          if(-not $c){throw 'ErrorLibrary fingerprint generation failed'}
+          Write-Host 'ERRORLIBRARY PASS'
+      - name: Validate observable orchestrator source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tokens=$null;$errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./ultra-mode/UAUD.ps1),[ref]$tokens,[ref]$errors)|Out-Null
+          if(@($errors).Count){$errors|Format-List|Out-String|Write-Error;exit 1}
+          $s=Get-Content ./ultra-mode/UAUD.ps1 -Raw
+          foreach($x in @('uaud-evidence','input.json','environment.json','stdout.txt','stderr.txt','result.json','ErrorLibrary.ps1','UARD_EXIT_CODE')){if($s -notmatch [regex]::Escape($x)){throw "Observable orchestrator missing: $x"}}
+          Write-Host 'ORCHESTRATOR PASS'
