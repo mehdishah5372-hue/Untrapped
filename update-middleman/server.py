@@ -43,8 +43,8 @@ def fetch(path):
         try:
             req=Request(UPSTREAM+path+"?middleman="+str(time.time_ns()),headers={"User-Agent":"Untrapped-Middleman/3.2","Accept":"*/*","Cache-Control":"no-cache"})
             with OPENER.open(req,timeout=FETCH_TIMEOUT) as res:
-                length=res.headers.get_content_length()
-                if length is not None and length>MAX_BYTES:raise UpstreamFailure(502,"size","artifact exceeds size limit")
+                length=res.headers.get('Content-Length')
+                if length is not None and int(length)>MAX_BYTES:raise UpstreamFailure(502,"size","artifact exceeds size limit")
                 return _read_limited(res)
         except HTTPError as e:
             last=e;code=int(e.code)
