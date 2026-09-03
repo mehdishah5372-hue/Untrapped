@@ -4,17 +4,19 @@ import base64, hashlib, json, os, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 VERSION="3.2.0"; PROTOCOL=3; BASELINE="1.0.0"
 UPSTREAM=os.environ.get("UNTRAPPED_UPSTREAM","https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/").rstrip("/")+"/"
 PORT=int(os.environ.get("PORT","8080")); MAX_BYTES=int(os.environ.get("MAX_ARTIFACT_BYTES",str(8*1024*1024))); FETCH_ATTEMPTS=5; FETCH_TIMEOUT=30; MAX_PATH=512
 ARTIFACTS=["manifest.json","background.js","content.js","popup.html","popup.js","bootstrap.bundle.min.js","assets/untrapped.png","assets/untrapped.svg","VERSION.txt","ultra-mode/INSTALL-PACKET-FILTER.ps1","ultra-mode/INSTALL-ULTRA-NODE.ps1","ultra-mode/INSTALL-ULTRA-MODE.ps1","ultra-mode/config.json","ultra-mode/create-override.ps1","ultra-mode/generate-keys.ps1","ultra-mode/packet-filter.ps1","ultra-mode/self-repair.ps1","ultra-mode/status-untrapped.ps1","ultra-mode/test-untrapped.ps1","ultra-mode/ultra-mode.ps1","ultra-mode/verify-override.ps1"]
 ALLOW=frozenset(ARTIFACTS); _cache={}; _locks={}; _global_lock=threading.RLock()
-
+class NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, int(code), f"upstream redirect rejected: {newurl}", headers, fp)
+OPENER=build_opener(NoRedirectHandler)
 class UpstreamFailure(Exception):
     def __init__(self, code, kind, detail): self.code=int(code); self.kind=str(kind); self.detail=str(detail); super().__init__(self.detail)
-
 def sha256(b): return hashlib.sha256(b).hexdigest()
 def _retry_delay(attempt,headers):
     v=headers.get("Retry-After") if headers else None
@@ -42,14 +44,13 @@ def fetch(path):
     for attempt in range(1,FETCH_ATTEMPTS+1):
         try:
             req=Request(UPSTREAM+path+"?middleman="+str(time.time_ns()),headers={"User-Agent":"Untrapped-Middleman/3.2","Accept":"*/*","Cache-Control":"no-cache"})
-            # Never follow an upstream redirect: a canonical artifact must remain on the configured source.
-            req.redirect=False if hasattr(req,'redirect') else None
-            with urlopen(req,timeout=FETCH_TIMEOUT) as res:
+            with OPENER.open(req,timeout=FETCH_TIMEOUT) as res:
                 length=res.headers.get_content_length()
                 if length is not None and length>MAX_BYTES: raise UpstreamFailure(502,"size","artifact exceeds size limit")
                 return _read_limited(res)
         except HTTPError as e:
             last=e; code=int(e.code)
+            if code in (301,302,303,307,308): raise UpstreamFailure(code,"redirect",f"upstream redirect rejected for canonical artifact {path}") from e
             if code in (408,425,429) or 500<=code<=599:
                 if attempt<FETCH_ATTEMPTS:
                     delay=_retry_delay(attempt,e.headers); print(f"[middleman] retryable upstream HTTP {code} for {path}; retry {attempt+1}/{FETCH_ATTEMPTS} in {delay}s",flush=True); time.sleep(delay); continue
@@ -96,7 +97,6 @@ def artifact(path):
         b=normalize(fetch(path),path)
         with _global_lock:_cache[path]=b; _locks.pop(path,None)
         return b
-
 class Handler(BaseHTTPRequestHandler):
     server_version="UntrappedMiddleman/3.2"; protocol_version="HTTP/1.1"
     def send_json(self,code,obj,extra=None):
@@ -133,10 +133,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[middleman] INTERNAL HANDLER ERROR: {type(e).__name__}: {e}",flush=True); self.send_json(500,{'error':'middleman_internal_error','detail':'request failed safely'},{'X-Untrapped-Failure-Class':'internal'})
     def log_message(self,f,*a):print('[middleman] '+f%a,flush=True)
-
 class Server(ThreadingHTTPServer):
-    allow_reuse_address=True
-    daemon_threads=True
-
+    allow_reuse_address=True; daemon_threads=True
 if __name__=='__main__':
     print('[middleman] Untrapped Update Middleman',VERSION,'starting on port',PORT,flush=True); print('[middleman] Baseline floor:',BASELINE,flush=True); print('[middleman] Status audit: 000-999 / 1000 numeric identifiers accounted for',flush=True); Server(('0.0.0.0',PORT),Handler).serve_forever()
