@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "pipeline_version": "2.0.0",
+  "fail_closed": true,
+  "stages": [
+    {"id":"01-canon","name":"CANON","execution":"remote"},
+    {"id":"02-middleman","name":"MIDDLEMAN","execution":"remote"},
+    {"id":"03-json-to-powershell","name":"JSON_TO_PS","execution":"remote-sandbox"},
+    {"id":"04-powershell-parser","name":"PS_PARSER","execution":"windows-sandbox-no-execution"},
+    {"id":"05-repair","name":"REPAIR","execution":"isolated-sandbox"},
+    {"id":"06-ast-to-json","name":"AST_TO_JSON","execution":"windows-sandbox-no-execution"},
+    {"id":"07-canonical-match","name":"CANON_MATCH","execution":"isolated-sandbox"},
+    {"id":"08-windows-behaviour","name":"WINDOWS_BEHAVIOUR","execution":"disposable-windows-sandbox"},
+    {"id":"09-report","name":"UAUD_REPORT","execution":"client"},
+    {"id":"10-install","name":"INSTALL","execution":"client-fail-closed"}
+  ],
+  "evidence_contract": ["input.json","stdout.txt","stderr.txt","errors.json","environment.json","hashes.json","result.json","artifacts/"],
+  "user_interface": "Run UAUD and paste the final diagnostic block; infrastructure diagnostics are collected remotely.",
+  "safety": {"real_pc_unrestricted_remote_control": false,"candidate_execution_on_client": false,"firewall_mutation_by_validator": false,"known_good_retained_on_uncertainty": true}
+}
