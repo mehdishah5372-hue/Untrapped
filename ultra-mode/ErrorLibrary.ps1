@@ -1,5 +1,5 @@
 # ErrorLibrary for UARD - persistent, fail-safe diagnostic memory
-$ErrorLibraryVersion = '1.0.0'
+$ErrorLibraryVersion = '1.1.0'
 $ErrorLibraryPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'error-library.jsonl'
 $ErrorLibraryMaxRecordBytes = 32768
 
@@ -70,4 +70,26 @@ function Get-ErrorCount([string]$Fingerprint) {
             try { $_ | ConvertFrom-Json } catch { $null }
         } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
     } catch { return 0 }
+}
+
+function Scan-ErrorOutput {
+    param(
+        [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
+        [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage=''
+    )
+    $seen=@{}
+    foreach($line in @($Lines)) {
+        $text=[string]$line
+        if(-not(Test-ErrorLike $text $ExitCode $HttpStatus)){continue}
+        $category=Classify-ErrorText $text;$fp=Get-ErrorFingerprint $text $category
+        if($seen.ContainsKey($fp)){continue};$seen[$fp]=$true
+        [void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))
+    }
+}
+
+# Compatibility aliases used by older UAUD/UARD revisions.
+function Scan-ErrorLike { param([string]$Source,[string]$Artifact,[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage=''; Scan-ErrorOutput @PSBoundParameters }
+function Get-ErrorLibraryRecords {
+    if(-not(Test-Path -LiteralPath $ErrorLibraryPath)){return @()}
+    @(Get-Content -LiteralPath $ErrorLibraryPath|ForEach-Object{try{$_|ConvertFrom-Json}catch{}})
 }
