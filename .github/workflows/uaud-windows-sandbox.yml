@@ -49,6 +49,16 @@ jobs:
             Write-Host "ERRORLIBRARY PASS fingerprint=$fp"
           } finally { Remove-Item $ErrorLibraryPath -Force -ErrorAction SilentlyContinue; $ErrorLibraryPath=$old }
 
+      - name: Force-first diagnostic sandbox benchmark
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'ultra-mode'
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'diagnostic-force-sandbox.ps1')
+          $rc = $LASTEXITCODE
+          Write-Host "Diagnostic sandbox exit code: $rc"
+          if ($rc -ne 0) { throw "Force-first diagnostic sandbox failed with exit code $rc" }
+
       - name: UAUD validator gate
         shell: powershell
         run: |
