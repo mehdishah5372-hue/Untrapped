@@ -1,5 +1,6 @@
 # ErrorLibrary for UARD - persistent, fail-safe diagnostic memory
-$ErrorLibraryVersion = '2.0.1'
+# OSblocker 1.0.0 reporter contract preserved. Diagnostic selection may be smarter.
+$ErrorLibraryVersion = '1.1.1'
 $ErrorLibraryPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'error-library.jsonl'
 $ErrorLibraryMaxRecordBytes = 32768
 
@@ -31,72 +32,86 @@ function Classify-ErrorText([string]$Text) {
     return 'UNKNOWN'
 }
 
-function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
-    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return $true }
-    $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
-}
-
+# Reporter: deliberately unchanged from the OSblocker 1.0.0 contract.
 function Save-ErrorEvent {
     param(
         [string]$Source, [string]$Stream, [string]$Text, [int]$ExitCode = 0,
         [int]$HttpStatus = 0, [string]$Artifact = '', [string]$CandidateHash = '',
         [string]$PreviousCandidateHash = '', [int]$Attempt = 0, [string]$RepairAction = '',
-        [string]$SyntaxResult = '', [string]$Context = '', [string]$Confidence = 'HIGH'
+        [string]$SyntaxResult = '', [string]$Context = ''
     )
     try {
         $category = Classify-ErrorText $Text
         $fingerprint = Get-ErrorFingerprint $Text $category
         $record = [ordered]@{
-            schema = 2; library_version = $ErrorLibraryVersion; timestamp_utc = [DateTime]::UtcNow.ToString('o')
+            schema = 1; library_version = $ErrorLibraryVersion; timestamp_utc = [DateTime]::UtcNow.ToString('o')
             source = $Source; stream = $Stream; artifact = $Artifact; category = $category
-            confidence = $Confidence; fingerprint = $fingerprint
-            text = ([string]$Text).Substring(0, [Math]::Min(([string]$Text).Length, 12000))
+            fingerprint = $fingerprint; text = ([string]$Text).Substring(0, [Math]::Min(([string]$Text).Length, 12000))
             exit_code = $ExitCode; http_status = $HttpStatus; candidate_hash = $CandidateHash
             previous_candidate_hash = $PreviousCandidateHash; attempt = $Attempt; repair_action = $RepairAction
             syntax_result = $SyntaxResult; context = ([string]$Context).Substring(0, [Math]::Min(([string]$Context).Length, 12000))
         }
         $line = $record | ConvertTo-Json -Compress -Depth 8
-        if ([Text.Encoding]::UTF8.GetByteCount($line) -le $ErrorLibraryMaxRecordBytes) { Add-Content -LiteralPath $ErrorLibraryPath -Value $line -Encoding UTF8 }
+        if ([Text.Encoding]::UTF8.GetByteCount($line) -le $ErrorLibraryMaxRecordBytes) {
+            Add-Content -LiteralPath $ErrorLibraryPath -Value $line -Encoding UTF8
+        }
         return $fingerprint
     } catch { return $null }
 }
 
 function Get-ErrorCount([string]$Fingerprint) {
     if (-not (Test-Path -LiteralPath $ErrorLibraryPath)) { return 0 }
-    try { return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count }
-    catch { return 0 }
+    try {
+        return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch { $null }
+        } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
+    } catch { return 0 }
 }
 
+# Smarter checker: inspect the complete batch, rank concrete evidence, then call the
+# unchanged reporter with the same fields and output-scan stream used by OSblocker 1.0.0.
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
         [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage='', [string]$Context=''
     )
-    # FORCE CHECK: consume the complete stdout/stderr batch before any diagnosis is emitted.
-    $all = @($Lines | ForEach-Object { [string]$_ } | Where-Object { $_.Trim().Length -gt 0 })
+    $all = @($Lines | ForEach-Object { [string]$_ })
+    $nonEmpty = @($all | Where-Object { $_.Trim().Length -gt 0 })
     $candidates = @()
-    foreach($text in $all) {
+
+    foreach($text in $nonEmpty) {
         if(Test-ErrorLike $text 0 0) {
-            $candidates += [pscustomobject]@{Text=$text;Category=(Classify-ErrorText $text);Priority=3}
+            $category=Classify-ErrorText $text
+            $priority=3
+            if($category -eq 'PARSER'){ $priority=10 }
+            elseif($category -eq 'ACCESS'){ $priority=9 }
+            elseif($category -eq 'TIMEOUT'){ $priority=8 }
+            elseif($category -eq 'NOT_FOUND'){ $priority=7 }
+            elseif($category -eq 'ERROR'){ $priority=6 }
+            $candidates += [pscustomobject]@{Text=$text;Category=$category;Priority=$priority}
         }
     }
+
     if($HttpStatus -ge 400) {
-        $httpText = if($all.Count -gt 0){$all -join "`r`n"}else{"HTTP status $HttpStatus"}
-        $candidates += [pscustomobject]@{Text=$httpText;Category=(Classify-ErrorText ("HTTP $HttpStatus $httpText"));Priority=5}
+        $httpText = if($nonEmpty.Count -gt 0){$nonEmpty -join "`r`n"}else{"HTTP status $HttpStatus"}
+        $candidates += [pscustomobject]@{Text=$httpText;Category=(Classify-ErrorText ("HTTP $HttpStatus $httpText"));Priority=20}
     }
     if($ExitCode -ne 0) {
-        $processText = if($all.Count -gt 0){$all -join "`r`n"}else{"process exited with code $ExitCode"}
-        $candidates += [pscustomobject]@{Text=$processText;Category=(Classify-ErrorText $processText);Priority=6}
+        $processText = if($nonEmpty.Count -gt 0){$nonEmpty -join "`r`n"}else{"process exited with code $ExitCode"}
+        $candidates += [pscustomobject]@{Text=$processText;Category=(Classify-ErrorText $processText);Priority=21}
     }
-    if($candidates.Count -eq 0) { return @() }
-    $best = @($candidates | Sort-Object -Property Priority -Descending)[0]
-    $category = [string]$best.Category
-    if($category -eq 'UNKNOWN' -and $ExitCode -eq 0 -and $HttpStatus -lt 400) { return @() }
-    $confidence = if($ExitCode -ne 0 -or $HttpStatus -ge 400 -or $category -ne 'UNKNOWN'){'HIGH'}else{'LOW'}
-    $fp = Save-ErrorEvent -Source $Source -Stream 'force-scan' -Text ([string]$best.Text) -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; force-first; collected_lines=$($all.Count); $Context") -Confidence $confidence
-    if($null -eq $fp) { return @() }
-    return @([pscustomobject]@{fingerprint=$fp;category=$category;confidence=$confidence;line_count=$all.Count})
+
+    if($candidates.Count -eq 0){ return @() }
+    $best=@($candidates | Sort-Object -Property Priority -Descending)[0]
+    $fp=Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text ([string]$best.Text) -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; force-first checker; collected_lines=$($all.Count); $Context")
+    if($null -eq $fp){return @()}
+    return @([pscustomobject]@{fingerprint=$fp;category=[string]$best.Category})
+}
+
+function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
+    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return $true }
+    $t = if ($null -eq $Text) { '' } else { [string]$Text }
+    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
 }
 
 function Scan-ErrorOutput {
@@ -109,8 +124,12 @@ function Scan-ErrorOutput {
 
 function Scan-ErrorLike {
     param(
-        [string]$Source, [string]$Artifact, [string[]]$Lines,
-        [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage=''
+        [string]$Source,
+        [string]$Artifact,
+        [string[]]$Lines,
+        [int]$ExitCode=0,
+        [int]$HttpStatus=0,
+        [string]$Stage=''
     )
     return @(Force-DiagnosticScan @PSBoundParameters)
 }
