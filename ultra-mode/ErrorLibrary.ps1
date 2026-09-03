@@ -17,7 +17,6 @@ function Get-ErrorFingerprint([string]$Text, [string]$Category = 'UNKNOWN') {
     finally { $sha.Dispose() }
 }
 
-# REPORTER CLASSIFICATION: unchanged from the OSblocker 1.0.0 baseline.
 function Classify-ErrorText([string]$Text) {
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
     if ($t -match '(?i)parse|parser|syntax|unexpected token|missing.*[\)\]\}]|term.*not recognized') { return 'PARSER' }
@@ -33,7 +32,7 @@ function Classify-ErrorText([string]$Text) {
     return 'UNKNOWN'
 }
 
-# REPORTER: unchanged from OSblocker 1.0.0.
+# Reporter: intentionally identical to OSblocker 1.0.0.
 function Save-ErrorEvent {
     param(
         [string]$Source, [string]$Stream, [string]$Text, [int]$ExitCode = 0,
@@ -63,14 +62,13 @@ function Save-ErrorEvent {
 function Get-ErrorCount([string]$Fingerprint) {
     if (-not (Test-Path -LiteralPath $ErrorLibraryPath)) { return 0 }
     try {
-        return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object {
-            try { $_ | ConvertFrom-Json } catch { $null }
-        } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
+        return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
     } catch { return 0 }
 }
 
-# CHECKER ONLY. The complete batch is inspected before any event is emitted.
-# The reporter still receives the original individual line and original metadata.
+# Checker-only policy. The full batch is evaluated first, then individual lines are
+# passed to the unchanged reporter. This prevents process/HTTP status from turning
+# unrelated test prose into events.
 function Test-DiagnosticNarrative([string]$Text) {
     $t = [string]$Text
     if ([string]::IsNullOrWhiteSpace($t)) { return $true }
@@ -78,39 +76,24 @@ function Test-DiagnosticNarrative([string]$Text) {
 }
 
 function Get-DiagnosticDecision {
-    param(
-        [string[]]$Lines,
-        [int]$ExitCode=0,
-        [int]$HttpStatus=0
-    )
+    param([string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0)
     $all=@($Lines|ForEach-Object{[string]$_})
     $nonEmpty=@($all|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
-    $decisions=@()
-    # Batch context is evaluated before selection; it is explanatory evidence, not reporter state.
-    $hasConcrete=$false
+    $batchHasConcrete=($nonEmpty|Where-Object{$_ -match '(?i)(ParserError|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])'}).Count -gt 0
+    $result=@()
     foreach($text in $nonEmpty){
-        if($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b)'){$hasConcrete=$true;break}
-    }
-    foreach($text in $nonEmpty){
-        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])
-        $generic=[bool]($text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
         $narrative=Test-DiagnosticNarrative $text
-        $category=Classify-ErrorText $text
+        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])')
+        $generic=[bool]($text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
         $objective=($ExitCode -ne 0 -or $HttpStatus -ge 400)
-        $emit=$false
-        if($strong){$emit=$true}
-        elseif($generic -and -not $narrative){$emit=$true}
-        elseif($objective -and -not $narrative){$emit=$true}
-        $decisions += [pscustomobject]@{Text=$text;Emit=$emit;Category=$category;Strong=$strong;Generic=$generic;Narrative=$narrative;Objective=$objective;BatchHasConcrete=$hasConcrete}
+        $emit=($strong -or ($generic -and -not $narrative) -or ($objective -and -not $narrative))
+        $result += [pscustomobject]@{Text=$text;Emit=$emit;Strong=$strong;Generic=$generic;Narrative=$narrative;Objective=$objective;BatchHasConcrete=$batchHasConcrete}
     }
-    return @($decisions)
+    return @($result)
 }
 
 function Force-DiagnosticScan {
-    param(
-        [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
-        [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage='', [string]$Context=''
-    )
+    param([string]$Source='UNKNOWN',[string]$Artifact='',[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage='', [string]$Context='')
     $decisions=@(Get-DiagnosticDecision -Lines $Lines -ExitCode $ExitCode -HttpStatus $HttpStatus)
     $seen=@{}
     foreach($d in $decisions){
@@ -118,35 +101,26 @@ function Force-DiagnosticScan {
         $text=[string]$d.Text
         $category=Classify-ErrorText $text
         $fp=Get-ErrorFingerprint $text $category
-        if($seen.ContainsKey($fp)){continue};$seen[$fp]=$true
+        if($seen.ContainsKey($fp)){continue}
+        $seen[$fp]=$true
         [void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))
     }
     return @($seen.Keys|ForEach-Object{[pscustomobject]@{fingerprint=$_}})
 }
 
-function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
-    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return [bool](-not (Test-DiagnosticNarrative $Text)) }
-    $t = if ($null -eq $Text) { '' } else { [string]$Text }
+function Test-ErrorLike([string]$Text,[int]$ExitCode=0,[int]$HttpStatus=0){
+    if($ExitCode -ne 0 -or $HttpStatus -ge 400){return [bool](-not(Test-DiagnosticNarrative $Text))}
+    $t=[string]$Text
     return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out)')
 }
 
 function Scan-ErrorOutput {
-    param(
-        [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
-        [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage=''
-    )
+    param([string]$Source='UNKNOWN',[string]$Artifact='',[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage='')
     return @(Force-DiagnosticScan -Source $Source -Artifact $Artifact -Lines $Lines -ExitCode $ExitCode -HttpStatus $HttpStatus -Stage $Stage)
 }
 
 function Scan-ErrorLike {
-    param(
-        [string]$Source,
-        [string]$Artifact,
-        [string[]]$Lines,
-        [int]$ExitCode=0,
-        [int]$HttpStatus=0,
-        [string]$Stage=''
-    )
+    param([string]$Source,[string]$Artifact,[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage='')
     return @(Force-DiagnosticScan @PSBoundParameters)
 }
 
