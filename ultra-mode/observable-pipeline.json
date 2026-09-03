@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "pipeline_version": "3.0.0",
+  "pipeline_version": "3.0.1",
   "fail_closed": true,
   "source_of_truth": "config.json",
   "middleman": {"version":"3.2.0","protocol":3,"baseline":"1.0.0","service":"000-999","url":"https://untrapped-update-middleman-000-999-production.up.railway.app"},
@@ -9,6 +9,7 @@
     {"id":"01-json-to-powershell","name":"JSON_TO_PS","execution":"non-executing-data-sandbox"},
     {"id":"02-powershell-parser","name":"PS_PARSER","execution":"non-executing-parser-sandbox"},
     {"id":"03-adaptive-repair","name":"REPAIR","execution":"bounded-adaptive-fail-closed-sandbox"},
+    {"id":"03-regression","name":"HISTORICAL_REGRESSION","execution":"non-installing-regression-suite"},
     {"id":"04-ast-to-canonical","name":"AST_TO_CANONICAL","execution":"explicit-artifact-schema"},
     {"id":"05-canonical-equivalence","name":"CANONICAL_EQUIVALENCE","execution":"semantic-equivalence-gate"},
     {"id":"06-windows-behaviour","name":"WINDOWS_BEHAVIOUR","execution":"disposable-windows-process-sandbox"},
