@@ -17,7 +17,7 @@ function Get-ErrorFingerprint([string]$Text, [string]$Category = 'UNKNOWN') {
     finally { $sha.Dispose() }
 }
 
-# REPORTER CLASSIFICATION: kept byte-for-byte compatible with the 1.0.0 baseline.
+# REPORTER CLASSIFICATION: unchanged from the OSblocker 1.0.0 baseline.
 function Classify-ErrorText([string]$Text) {
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
     if ($t -match '(?i)parse|parser|syntax|unexpected token|missing.*[\)\]\}]|term.*not recognized') { return 'PARSER' }
@@ -69,9 +69,8 @@ function Get-ErrorCount([string]$Fingerprint) {
     } catch { return 0 }
 }
 
-# CHECKER ONLY. The entire batch is inspected before any event is emitted.
-# Crucially, it returns individual lines, so the reporter still receives the exact
-# line text and the exact baseline metadata. No synthetic aggregate event is created.
+# CHECKER ONLY. The complete batch is inspected before any event is emitted.
+# The reporter still receives the original individual line and original metadata.
 function Test-DiagnosticNarrative([string]$Text) {
     $t = [string]$Text
     if ([string]::IsNullOrWhiteSpace($t)) { return $true }
@@ -87,26 +86,21 @@ function Get-DiagnosticDecision {
     $all=@($Lines|ForEach-Object{[string]$_})
     $nonEmpty=@($all|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
     $decisions=@()
-    # Batch context is deliberately computed once. It can influence confidence,
-    # but never mutates the reporter's output contract.
+    # Batch context is evaluated before selection; it is explanatory evidence, not reporter state.
     $hasConcrete=$false
     foreach($text in $nonEmpty){
         if($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b)'){$hasConcrete=$true;break}
     }
     foreach($text in $nonEmpty){
-        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])')
+        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])
         $generic=[bool]($text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
         $narrative=Test-DiagnosticNarrative $text
         $category=Classify-ErrorText $text
         $objective=($ExitCode -ne 0 -or $HttpStatus -ge 400)
-        # A concrete machine/error signature wins. Narrative-looking lines lose,
-        # even if they contain words such as "failure" or "error".
         $emit=$false
         if($strong){$emit=$true}
         elseif($generic -and -not $narrative){$emit=$true}
-        elseif($objective -and -not $narrative -and $category -ne 'UNKNOWN'){$emit=$true}
-        # If the batch contains a concrete error, do not let unrelated narrative
-        # lines inherit the error solely from process/HTTP status.
+        elseif($objective -and -not $narrative){$emit=$true}
         $decisions += [pscustomobject]@{Text=$text;Emit=$emit;Category=$category;Strong=$strong;Generic=$generic;Narrative=$narrative;Objective=$objective;BatchHasConcrete=$hasConcrete}
     }
     return @($decisions)
@@ -119,10 +113,9 @@ function Force-DiagnosticScan {
     )
     $decisions=@(Get-DiagnosticDecision -Lines $Lines -ExitCode $ExitCode -HttpStatus $HttpStatus)
     $seen=@{}
-    $selected=@()
-    foreach($d in $decisions){if($d.Emit){$selected+=$d.Text}}
-    foreach($text in $selected){
-        # Reporter path remains identical: same line text, same stream, same metadata.
+    foreach($d in $decisions){
+        if(-not $d.Emit){continue}
+        $text=[string]$d.Text
         $category=Classify-ErrorText $text
         $fp=Get-ErrorFingerprint $text $category
         if($seen.ContainsKey($fp)){continue};$seen[$fp]=$true
@@ -132,11 +125,7 @@ function Force-DiagnosticScan {
 }
 
 function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
-    # Public compatibility function. It now uses the same concrete detector as the
-    # batch checker but does not change reporter schema/fields.
-    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) {
-        return [bool](-not (Test-DiagnosticNarrative $Text))
-    }
+    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return [bool](-not (Test-DiagnosticNarrative $Text)) }
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
     return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out)')
 }
