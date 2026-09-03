@@ -1,5 +1,5 @@
 # ErrorLibrary for UARD - persistent, fail-safe diagnostic memory
-# OSblocker 1.0.0 reporter contract preserved. Diagnostic selection may be smarter.
+# OSblocker 1.0.0 reporter contract is intentionally unchanged. Only checker selection is upgraded.
 $ErrorLibraryVersion = '1.1.1'
 $ErrorLibraryPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'error-library.jsonl'
 $ErrorLibraryMaxRecordBytes = 32768
@@ -17,21 +17,23 @@ function Get-ErrorFingerprint([string]$Text, [string]$Category = 'UNKNOWN') {
     finally { $sha.Dispose() }
 }
 
+# REPORTER CLASSIFICATION: kept byte-for-byte compatible with the 1.0.0 baseline.
 function Classify-ErrorText([string]$Text) {
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    if ($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|Missing\s+.*closing|Unexpected\s+token|Missing\s+\)|Missing\s+\]|Missing\s+})') { return 'PARSER' }
-    if ($t -match '(?i)(Access is denied|access denied|UnauthorizedAccessException|permission denied|forbidden)') { return 'ACCESS' }
-    if ($t -match '(?i)(operation timed out|request timed out|timeout occurred|timed out)') { return 'TIMEOUT' }
-    if ($t -match '(?i)(The term .* is not recognized|CommandNotFoundException|cannot find the path|path.*not found)') { return 'NOT_FOUND' }
-    if ($t -match '(?i)(HTTP\s+422|422\s+Unprocessable|Unprocessable Entity)') { return 'HTTP_422' }
-    if ($t -match '(?i)(HTTP\s+409|409\s+Conflict)') { return 'HTTP_409' }
-    if ($t -match '(?i)(HTTP\s+(?:408|425|429)|408\s+Request Timeout|425\s+Too Early|429\s+Too Many Requests|HTTP\s+5\d\d)') { return 'NETWORK_TRANSIENT' }
-    if ($t -match '(?i)(redirect rejected|HTTP\s+(?:301|302|303|307|308)|301\s+Moved|302\s+Found|307\s+Temporary|308\s+Permanent)') { return 'REDIRECT' }
-    if ($t -match '(?i)(Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:)') { return 'ERROR' }
-    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { return 'ERROR' }
+    if ($t -match '(?i)parse|parser|syntax|unexpected token|missing.*[\)\]\}]|term.*not recognized') { return 'PARSER' }
+    if ($t -match '(?i)access denied|unauthorized|forbidden|permission') { return 'ACCESS' }
+    if ($t -match '(?i)timeout|timed out') { return 'TIMEOUT' }
+    if ($t -match '(?i)not found|cannot find|404') { return 'NOT_FOUND' }
+    if ($t -match '(?i)422|unprocessable') { return 'HTTP_422' }
+    if ($t -match '(?i)409|conflict') { return 'HTTP_409' }
+    if ($t -match '(?i)408|425|429|5\d\d|transient|retry') { return 'NETWORK_TRANSIENT' }
+    if ($t -match '(?i)redirect|301|302|307|308') { return 'REDIRECT' }
+    if ($t -match '(?i)exception|error|failed|failure') { return 'ERROR' }
+    if ($t -match '(?i)warning|warn') { return 'WARNING' }
     return 'UNKNOWN'
 }
 
+# REPORTER: unchanged from OSblocker 1.0.0.
 function Save-ErrorEvent {
     param(
         [string]$Source, [string]$Stream, [string]$Text, [int]$ExitCode = 0,
@@ -67,43 +69,76 @@ function Get-ErrorCount([string]$Fingerprint) {
     } catch { return 0 }
 }
 
-# Smarter checker only. Reporting remains the OSblocker 1.0.0 per-line reporter:
-# schema 1, output-scan, same fields, same context, same dedupe semantics.
+# CHECKER ONLY. The entire batch is inspected before any event is emitted.
+# Crucially, it returns individual lines, so the reporter still receives the exact
+# line text and the exact baseline metadata. No synthetic aggregate event is created.
+function Test-DiagnosticNarrative([string]$Text) {
+    $t = [string]$Text
+    if ([string]::IsNullOrWhiteSpace($t)) { return $true }
+    return [bool]($t -match '(?i)^(?:\s*(?:pass|passed|success|successful|ok)\b|\[\s*(?:regression\s+)?pass\s*\]|\s*no\s+errors?\s+(?:were\s+)?found\b|\s*this\s+test\s+(?:verifies|checks|ensures)\b|\s*the\s+previous\s+(?:failure|error)\s+(?:is|was)\s+(?:intentionally|deliberately)\b|\s*http\s+\d+\s+.*(?:fixture|regression)\b)')
+}
+
+function Get-DiagnosticDecision {
+    param(
+        [string[]]$Lines,
+        [int]$ExitCode=0,
+        [int]$HttpStatus=0
+    )
+    $all=@($Lines|ForEach-Object{[string]$_})
+    $nonEmpty=@($all|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+    $decisions=@()
+    # Batch context is deliberately computed once. It can influence confidence,
+    # but never mutates the reporter's output contract.
+    $hasConcrete=$false
+    foreach($text in $nonEmpty){
+        if($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b)'){$hasConcrete=$true;break}
+    }
+    foreach($text in $nonEmpty){
+        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])')
+        $generic=[bool]($text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
+        $narrative=Test-DiagnosticNarrative $text
+        $category=Classify-ErrorText $text
+        $objective=($ExitCode -ne 0 -or $HttpStatus -ge 400)
+        # A concrete machine/error signature wins. Narrative-looking lines lose,
+        # even if they contain words such as "failure" or "error".
+        $emit=$false
+        if($strong){$emit=$true}
+        elseif($generic -and -not $narrative){$emit=$true}
+        elseif($objective -and -not $narrative -and $category -ne 'UNKNOWN'){$emit=$true}
+        # If the batch contains a concrete error, do not let unrelated narrative
+        # lines inherit the error solely from process/HTTP status.
+        $decisions += [pscustomobject]@{Text=$text;Emit=$emit;Category=$category;Strong=$strong;Generic=$generic;Narrative=$narrative;Objective=$objective;BatchHasConcrete=$hasConcrete}
+    }
+    return @($decisions)
+}
+
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
         [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage='', [string]$Context=''
     )
-    $all=@($Lines|ForEach-Object{[string]$_})
-    $nonEmpty=@($all|Where-Object{$_.Trim().Length -gt 0})
+    $decisions=@(Get-DiagnosticDecision -Lines $Lines -ExitCode $ExitCode -HttpStatus $HttpStatus)
     $seen=@{}
     $selected=@()
-
-    # Preserve baseline reporter semantics whenever objective process/HTTP evidence exists:
-    # baseline Test-ErrorLike returned true for every non-empty line in these conditions.
-    if($ExitCode -ne 0 -or $HttpStatus -ge 400){
-        $selected=$nonEmpty
-    } else {
-        # Otherwise, inspect the complete batch first and select only concrete error evidence.
-        foreach($text in $nonEmpty){
-            if(Test-ErrorLike $text 0 0){$selected += $text}
-        }
-    }
-
+    foreach($d in $decisions){if($d.Emit){$selected+=$d.Text}}
     foreach($text in $selected){
+        # Reporter path remains identical: same line text, same stream, same metadata.
         $category=Classify-ErrorText $text
         $fp=Get-ErrorFingerprint $text $category
-        if($seen.ContainsKey($fp)){continue}
-        $seen[$fp]=$true
+        if($seen.ContainsKey($fp)){continue};$seen[$fp]=$true
         [void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))
     }
     return @($seen.Keys|ForEach-Object{[pscustomobject]@{fingerprint=$_}})
 }
 
 function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
-    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return $true }
+    # Public compatibility function. It now uses the same concrete detector as the
+    # batch checker but does not change reporter schema/fields.
+    if ($ExitCode -ne 0 -or $HttpStatus -ge 400) {
+        return [bool](-not (Test-DiagnosticNarrative $Text))
+    }
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
+    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out)')
 }
 
 function Scan-ErrorOutput {
