@@ -1,6 +1,5 @@
-# UAUD validation engine 1.0.1
+# UAUD validation engine 1.0.2
 # Syntax gate + adaptive repair + ErrorLibrary. Candidate is NEVER executed here.
-$ErrorActionPreference='Stop'
 param(
  [Parameter(Mandatory=$true)][string]$Candidate,
  [string]$Canonical,
@@ -9,6 +8,7 @@ param(
  [int]$MaxAttempts=50,
  [int]$EmergencyCeiling=200
 )
+$ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $ErrorLibrary=Join-Path $Root 'ErrorLibrary.ps1'
 if(Test-Path -LiteralPath $ErrorLibrary){. $ErrorLibrary}
@@ -21,4 +21,4 @@ function Write-RunReport($obj){$p=Join-Path $ReportDir (([IO.Path]::GetFileName(
 $history=New-Object 'System.Collections.Generic.List[object]';$perError=@{};$attempt=0;$source=Get-Content -LiteralPath $Candidate -Raw -Encoding UTF8;$previousHash='';$verdict='UNKNOWN_ERROR'
 while($true){$attempt++;if($attempt -gt $EmergencyCeiling){$verdict='EMERGENCY_CEILING';break};if($attempt -gt $MaxAttempts){$verdict='REPAIR_ATTEMPT_CEILING';break};$candidateHash=Hash-Text $source;Write-Event ("SYNTAX attempt $attempt candidate=$candidateHash");$r=Get-ParserResult $source;if($r.pass){Write-Event 'SYNTAX PASS';$verdict=if($attempt -eq 1){'SYNTAX_PASS'}else{'SYNTAX_REPAIR_SUCCESS'};break};$cooked=$false;foreach($e in @($r.errors)){$fp=if(Get-Command Get-ErrorFingerprint -ErrorAction SilentlyContinue){Get-ErrorFingerprint $e.message 'PARSER'}else{Hash-Text ('PARSER|'+$e.message)};if(-not $perError.ContainsKey($fp)){$perError[$fp]=0};$perError[$fp]++;$history.Add([ordered]@{attempt=$attempt;fingerprint=$fp;message=$e.message;line=$e.line;column=$e.column});if(Get-Command Save-ErrorEvent -ErrorAction SilentlyContinue){[void](Save-ErrorEvent -Source 'UAUD' -Stream 'Parser' -Text $e.message -Artifact $Artifact -CandidateHash $candidateHash -PreviousCandidateHash $previousHash -Attempt $attempt -SyntaxResult 'FAIL' -Context ("line=$($e.line) column=$($e.column)"))};if($perError[$fp] -ge $RepeatedErrorThreshold){$cooked=$true}};if($cooked){Write-Event 'COOKED_REPEATED_ERROR';$verdict='COOKED_REPEATED_ERROR';break};$repair=Invoke-DeterministicRepair $source $r;if(-not $repair.changed){$verdict='UNKNOWN_ERROR';break};$newResult=Get-ParserResult $repair.source;if(@($newResult.errors).Count -ge @($r.errors).Count){$verdict='NON_PROGRESSING_REPAIR';break};Write-Event ('REPAIR '+$repair.action);$previousHash=$candidateHash;$source=$repair.source}
 if($verdict -in @('SYNTAX_PASS','SYNTAX_REPAIR_SUCCESS') -and $Canonical){try{$null=Get-Content -LiteralPath $Canonical -Raw -Encoding UTF8|ConvertFrom-Json -ErrorAction Stop}catch{$verdict='CANONICAL_INVALID'};if($verdict -in @('SYNTAX_PASS','SYNTAX_REPAIR_SUCCESS')){Write-Event 'AST PASS; artifact-specific canonical comparator required.';$verdict='AST_PASS_CANONICAL_COMPARATOR_REQUIRED'}}
-$report=[ordered]@{schema=1;uaud_version='1.0.1';artifact=$Artifact;candidate_hash=Hash-Text $source;attempts=$attempt;error_history=@($history);per_error=$perError;final_verdict=$verdict;behavioural_stage='EXTERNAL_ISOLATED_WINDOWS_CI';install_allowed=$false};Write-RunReport $report;$report|ConvertTo-Json -Depth 20;if($verdict -in @('SYNTAX_PASS','SYNTAX_REPAIR_SUCCESS')){exit 0}else{exit 1}
+$report=[ordered]@{schema=1;uaud_version='1.0.2';artifact=$Artifact;candidate_hash=Hash-Text $source;attempts=$attempt;error_history=@($history);per_error=$perError;final_verdict=$verdict;behavioural_stage='EXTERNAL_ISOLATED_WINDOWS_CI';install_allowed=$false};Write-RunReport $report;$report|ConvertTo-Json -Depth 20;if($verdict -in @('SYNTAX_PASS','SYNTAX_REPAIR_SUCCESS')){exit 0}else{exit 1}
