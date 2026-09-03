@@ -50,10 +50,10 @@ function Test-Config($config) {
     if ($all.Count -eq 0) { throw 'Configuration contains no domains.' }
     foreach ($d in $all) { $base = if ($d.StartsWith('*.')) {$d.Substring(2)} else {$d}; if ($base -notmatch '^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$') { throw "Invalid domain entry: $d" } }
 }
-function Test-UltraActive($config) {
+function Test-UltraActive($config,[TimeSpan]$Now=(Get-Date).TimeOfDay) {
     if (-not [bool]$config.enabled) { return $false }
-    $start=[TimeSpan]::Parse([string]$config.start); $end=[TimeSpan]::Parse([string]$config.end); $now=(Get-Date).TimeOfDay
-    if ($start -eq $end) { return $true }; if ($start -lt $end) { return ($now -ge $start -and $now -lt $end) }; return ($now -ge $start -or $now -lt $end)
+    $start=[TimeSpan]::Parse([string]$config.start); $end=[TimeSpan]::Parse([string]$config.end)
+    if ($start -eq $end) { return $true }; if ($start -lt $end) { return ($Now -ge $start -and $Now -lt $end) }; return ($Now -ge $start -or $Now -lt $end)
 }
 function Test-OverrideActive {
     $path=Join-Path $Root 'override-until.txt'
