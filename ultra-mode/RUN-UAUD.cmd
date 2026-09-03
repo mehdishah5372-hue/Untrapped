@@ -18,9 +18,9 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo [UAUD] Launching UARD 1.0.3 with process-scoped ExecutionPolicy Bypass...
-echo [UAUD] UARD will diagnose Group Policy/application-control restrictions instead of attempting to bypass them.
-"%PS%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -NoExit -File "%ROOT%self-repair.ps1"
+echo [UAUD] Launching UARD 1.0.4 with process-scoped ExecutionPolicy Bypass...
+echo [UAUD] UARD diagnoses Group Policy/application-control restrictions instead of attempting to bypass them.
+"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "%ROOT%self-repair.ps1"
 set "RC=%ERRORLEVEL%"
 popd >nul 2>&1
 echo [UAUD] UARD exited with code %RC%.
