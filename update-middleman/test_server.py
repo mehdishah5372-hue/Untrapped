@@ -2,24 +2,20 @@ import io, threading, unittest
 from email.message import Message
 from urllib.error import HTTPError
 import server
-
 class FakeResponse:
-    def __init__(self, body=b'ok', content_length=None):
-        self.body=body; self.headers=Message(); self.closed=False
+    def __init__(self,body=b'ok',content_length=None):
+        self.body=body;self.headers=Message();self.closed=False
         if content_length is not None:self.headers['Content-Length']=str(content_length)
-    def __enter__(self): return self
-    def __exit__(self,*a): self.close()
-    def read(self,n=-1):
-        out=self.body[:n]; self.body=self.body[len(out):]; return out
-    def close(self): self.closed=True
-
+    def __enter__(self):return self
+    def __exit__(self,*a):self.close()
+    def read(self,n=-1):out=self.body[:n];self.body=self.body[len(out):];return out
+    def close(self):self.closed=True
 class FakeOpener:
     def __init__(self,responses):self.responses=list(responses);self.calls=0;self.lock=threading.Lock()
     def open(self,req,timeout=None):
         with self.lock:self.calls+=1;x=self.responses.pop(0)
         if isinstance(x,Exception):raise x
         return x
-
 class MiddlemanTests(unittest.TestCase):
     def setUp(self):server._cache.clear();server._locks.clear()
     def test_redirect_handler_rejects_redirect(self):
@@ -50,10 +46,10 @@ class MiddlemanTests(unittest.TestCase):
         class Slow(FakeOpener):
             def open(self,req,timeout=None):
                 with self.lock:self.calls+=1
-                import time;time.sleep(.05);return FakeResponse(b'abc')
+                import time;time.sleep(.05);return FakeResponse(b'{}')
         f=Slow([]);old=server.OPENER;server.OPENER=f;out=[]
         try:
             ts=[threading.Thread(target=lambda:out.append(server.artifact('manifest.json'))) for _ in range(8)]
-            [t.start() for t in ts];[t.join() for t in ts];self.assertEqual(f.calls,1);self.assertEqual(out,[b'abc']*8)
+            [t.start() for t in ts];[t.join() for t in ts];self.assertEqual(f.calls,1);self.assertEqual(out,[b'{}']*8)
         finally:server.OPENER=old
 if __name__=='__main__':unittest.main(verbosity=2)
