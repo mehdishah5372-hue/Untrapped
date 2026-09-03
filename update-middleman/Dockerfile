@@ -1,10 +1,9 @@
 FROM python:3.12-alpine
 WORKDIR /app
-ARG UNTRAPPED_BUILD_REV=20260903-3.2.0-000-999
+ARG UNTRAPPED_BUILD_REV=20260903-3.2.0-000-999-HARDENED
 RUN echo "[middleman] build revision ${UNTRAPPED_BUILD_REV}"
 COPY server.py /app/server.py
 RUN python -m py_compile /app/server.py
-# Numeric status audit: all identifiers 000-999 are accounted for; standard HTTP is 100-599.
 RUN python - <<'PY'
 required=[f'{i:03d}' for i in range(1000)]
 assert len(required)==1000 and required[0]=='000' and required[-1]=='999'
