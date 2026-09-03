@@ -7,8 +7,8 @@ if not exist "%PS%" (
   pause
   exit /b 1
 )
-if not exist "%ROOT%self-repair.ps1" (
-  echo [UAUD] self-repair.ps1 was not found in "%ROOT%"
+if not exist "%ROOT%UAUD.ps1" (
+  echo [UAUD] UAUD.ps1 was not found in "%ROOT%"
   pause
   exit /b 1
 )
@@ -18,12 +18,12 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo [UAUD] Launching UARD 1.0.4 with process-scoped ExecutionPolicy Bypass...
-echo [UAUD] UARD diagnoses Group Policy/application-control restrictions instead of attempting to bypass them.
-"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "%ROOT%self-repair.ps1"
+echo [UAUD] Launching UAUD observable pipeline...
+echo [UAUD] Chain: CANON -^> MIDDLEMAN -^> JSON/PS -^> PARSER -^> REPAIR -^> AST/JSON -^> CANON MATCH -^> WINDOWS -^> UARD -^> INSTALL
+"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "%ROOT%UAUD.ps1"
 set "RC=%ERRORLEVEL%"
 popd >nul 2>&1
-echo [UAUD] UARD exited with code %RC%.
-echo [UAUD] 0=success, 1=repair failure, 2=verification incomplete.
+echo [UAUD] UAUD exited with code %RC%.
+echo [UAUD] 0=success, 1=gate/repair failure, 2=verification incomplete.
 pause
 exit /b %RC%
