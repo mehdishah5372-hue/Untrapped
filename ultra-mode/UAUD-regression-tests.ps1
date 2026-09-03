@@ -1,14 +1,16 @@
-# UAUD regression tests 1.1.0 — non-installing
+# UAUD regression tests 1.2.0 — non-installing
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $UAUD=Join-Path $Root 'UAUD.ps1'
 $ErrorLibrary=Join-Path $Root 'ErrorLibrary.ps1'
+$DiagnosticSandbox=Join-Path $Root 'diagnostic-force-sandbox.ps1'
 function ParseText([string]$Source){$t=$null;$e=$null;$a=[System.Management.Automation.Language.Parser]::ParseInput($Source,[ref]$t,[ref]$e);[pscustomobject]@{Ast=$a;Errors=@($e)}}
 function Pass([string]$Message){Write-Host "[REGRESSION PASS] $Message" -ForegroundColor Green}
 function Fail([string]$Message){Write-Host "[REGRESSION FAIL] $Message" -ForegroundColor Red;exit 1}
 
 if(-not(Test-Path -LiteralPath $UAUD)){Fail 'UAUD.ps1 missing'}
 if(-not(Test-Path -LiteralPath $ErrorLibrary)){Fail 'ErrorLibrary.ps1 missing'}
+if(-not(Test-Path -LiteralPath $DiagnosticSandbox)){Fail 'diagnostic force sandbox missing'}
 
 $source=Get-Content -LiteralPath $UAUD -Raw
 $current=ParseText $source
@@ -26,7 +28,11 @@ if(@($libraryResult.Errors).Count -ne 0){
 }
 Pass 'current ErrorLibrary.ps1 parses successfully'
 
-# Historical regression: PowerShell treats $code: inside a double-quoted string as an invalid variable reference.
+$diagnosticSource=Get-Content -LiteralPath $DiagnosticSandbox -Raw
+$diagnosticResult=ParseText $diagnosticSource
+if(@($diagnosticResult.Errors).Count -ne 0){Fail 'diagnostic force sandbox does not parse'}
+Pass 'diagnostic force sandbox parses successfully'
+
 $bad='throw "FETCH FAILURE $name HTTP $code: $message"'
 $badResult=ParseText $bad
 if(@($badResult.Errors).Count -eq 0){Fail 'historical $code: parser failure was not reproduced'}
@@ -40,7 +46,6 @@ Pass 'corrected ${code}: form parses successfully'
 if($source -match '\$code:'){Fail 'the historical $code: defect is still present in UAUD.ps1'}
 Pass 'historical $code: defect is absent from UAUD.ps1'
 
-# Historical ErrorLibrary regression: a semicolon inside the param() declaration can terminate the parameter list incorrectly.
 $badLibrary='function Scan-ErrorLike { param([string]$Source,[string]$Artifact,[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage=""; Scan-ErrorOutput @PSBoundParameters }'
 $badLibraryResult=ParseText $badLibrary
 if(@($badLibraryResult.Errors).Count -eq 0){Fail 'historical ErrorLibrary param-list parser failure was not reproduced'}
@@ -49,8 +54,10 @@ Pass 'historical ErrorLibrary malformed param-list failure is reproduced'
 if($librarySource -match '\[string\]\$Stage=''[^\r\n]*;'){Fail 'historical ErrorLibrary malformed param-list defect is still present'}
 Pass 'historical ErrorLibrary malformed param-list defect is absent'
 
-# The former end-of-pipeline malformed catch/string is covered by the full-file parser gate above.
-Pass 'full-file parser gate covers the historical missing-string/missing-brace failure'
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $DiagnosticSandbox
+if($LASTEXITCODE -ne 0){Fail "diagnostic force sandbox failed with exit code $LASTEXITCODE"}
+Pass 'force-first diagnostic benchmark outperforms OSblocker 1.0.0 lexical baseline'
 
-Write-Host '[REGRESSION PASS] UAUD historical parser regression suite complete' -ForegroundColor Cyan
+Pass 'full-file parser gate covers historical missing-string/missing-brace failure'
+Write-Host '[REGRESSION PASS] UAUD historical + diagnostic regression suite complete' -ForegroundColor Cyan
 exit 0
