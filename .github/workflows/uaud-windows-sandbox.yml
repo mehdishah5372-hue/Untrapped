@@ -1,0 +1,65 @@
+name: UAUD Windows sandbox
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-sandbox:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Syntax gate - parse all PowerShell without executing it
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse -File
+          if (-not $files) { throw 'No PowerShell artifacts found.' }
+          foreach ($f in $files) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if (@($errors).Count -ne 0) {
+              Write-Host "SYNTAX FAIL: $($f.FullName)"
+              $errors | ForEach-Object { Write-Host "  line=$($_.Extent.StartLineNumber) col=$($_.Extent.StartColumnNumber): $($_.Message)" }
+              exit 1
+            }
+            Write-Host "SYNTAX PASS: $($f.FullName)"
+          }
+
+      - name: UARD/ErrorLibrary engine gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'ultra-mode'
+          $candidate = Join-Path $env:TEMP 'uaud-errorlib-test.ps1'
+          Set-Content -LiteralPath $candidate -Value 'Write-Host "known failure"' -Encoding UTF8
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'UAUD-validate.ps1') -Candidate $candidate -Artifact 'regression-test.ps1' 2>&1
+          $out | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw "UAUD validator failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $root 'uaud-reports'))) { throw 'UAUD report directory was not created.' }
+
+      - name: Behavioural sandbox
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $PWD 'ultra-mode\sandbox-behaviour.ps1')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify protected boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $s = Get-Content -Raw -LiteralPath (Join-Path $PWD 'ultra-mode\packet-filter.ps1')
+          if ($s -match '(?i)Set-NetFirewall|New-NetFirewall|Remove-NetFirewall|netsh\s+advfirewall|Set-ItemProperty.*Hosts|route\s+(add|delete)|netsh\s+interface\s+ip\s+set\s+dns') {
+            throw 'Protected-boundary regression detected in packet-filter.ps1.'
+          }
+          Write-Host 'PROTECTED BOUNDARY PASS.'
