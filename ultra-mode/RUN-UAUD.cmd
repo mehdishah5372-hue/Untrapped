@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions DisableDelayedExpansion
 set "ROOT=%~dp0"
 set "PS=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" (
@@ -12,10 +12,18 @@ if not exist "%ROOT%self-repair.ps1" (
   pause
   exit /b 1
 )
-echo [UAUD] Launching UARD with process-scoped ExecutionPolicy Bypass...
-echo [UAUD] If Group Policy or application-control policy blocks PowerShell, UARD will report it rather than changing that policy.
-"%PS%" -NoProfile -ExecutionPolicy Bypass -NoExit -File "%ROOT%self-repair.ps1"
+pushd "%ROOT%" >nul 2>&1
+if errorlevel 1 (
+  echo [UAUD] Could not enter the ultra-mode directory.
+  pause
+  exit /b 1
+)
+echo [UAUD] Launching UARD 1.0.3 with process-scoped ExecutionPolicy Bypass...
+echo [UAUD] UARD will diagnose Group Policy/application-control restrictions instead of attempting to bypass them.
+"%PS%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -NoExit -File "%ROOT%self-repair.ps1"
 set "RC=%ERRORLEVEL%"
+popd >nul 2>&1
 echo [UAUD] UARD exited with code %RC%.
+echo [UAUD] 0=success, 1=repair failure, 2=verification incomplete.
 pause
 exit /b %RC%
