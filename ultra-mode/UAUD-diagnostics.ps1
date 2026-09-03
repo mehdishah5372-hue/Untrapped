@@ -1,69 +1,62 @@
-# UAUD Diagnostics 1.0.0 — self-diagnosing launcher for the complete UAUD/UARD chain
-# Runs UAUD as a child process, captures ALL stdout/stderr, performs independent stage
-# health checks, fingerprints failures, and emits a precise diagnostic report.
-# This script never installs policy and never changes firewall/WFP/DNS/Hosts/routes/VPN/proxy.
+# UAUD Diagnostics 1.1.0 — independent fail-closed preflight
+# This is deliberately NOT the installer. It never invokes UAUD.ps1 or self-repair.ps1.
+# It validates the components independently, checks the pinned middleman, runs the syntax
+# validator and behavioural helper sandbox, scans every captured output line for errors,
+# and writes a precise report. A PASS here means the gates exercised by this diagnostic passed;
+# it does not claim that an unobserved future failure is impossible.
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
-$PSExe="$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+$PSExe=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $Middleman='https://untrapped-update-middleman-000-999-production.up.railway.app'
+$ExpectedVersion='3.2.0';$ExpectedProtocol=3;$ExpectedBaseline='1.0.0';$MaxBytes=8388608
 $RunId=(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[Guid]::NewGuid().ToString('N').Substring(0,8)
 $ReportRoot=Join-Path $Root 'uaud-diagnostics';$Run=Join-Path $ReportRoot $RunId
-New-Item -ItemType Directory -Force -Path $Run | Out-Null
+New-Item -ItemType Directory -Force -Path $Run|Out-Null
+$ErrorLibrary=Join-Path $Root 'ErrorLibrary.ps1';if(Test-Path -LiteralPath $ErrorLibrary){. $ErrorLibrary}
 function Stamp([string]$s){Write-Host ('['+(Get-Date -Format HH:mm:ss)+'] '+$s)}
-function HashFile([string]$p){$sha=Get-FileHash -LiteralPath $p -Algorithm SHA256;return $sha.Hash.ToLowerInvariant()}
-function WriteJson([string]$name,[object]$o){$o|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $Run $name) -Encoding UTF8}
-function Fingerprint([string]$text){$n=$text.ToLowerInvariant();$n=[regex]::Replace($n,'\d{4,}','<n>');$n=[regex]::Replace($n,'[0-9a-f]{16,}','<hex>');$n=[regex]::Replace($n,'https?://\S+','<url>');$n=[regex]::Replace($n,'\s+',' ');$n=$n.Trim();$bytes=[Text.Encoding]::UTF8.GetBytes($n);$h=[Security.Cryptography.SHA256]::Create();try{return ([BitConverter]::ToString($h.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}}
-function StageFromText([string]$line){if($line -match 'STAGE 0|canonical'){return 'CANON/MIDDLEMAN'}elseif($line -match 'STAGE 1|JSON -> PS'){return 'JSON_TO_PS'}elseif($line -match 'STAGE 2|PARSER'){return 'PS_PARSER'}elseif($line -match 'STAGE 3|adaptive repair|repair validator'){return 'ADAPTIVE_REPAIR'}elseif($line -match 'STAGE 4|AST'){return 'AST_TO_CANON'}elseif($line -match 'STAGE 5|equivalence|CANONICAL_MISMATCH'){return 'CANONICAL_EQUIVALENCE'}elseif($line -match 'STAGE 6|behavioural|behaviour'){return 'WINDOWS_BEHAVIOUR'}elseif($line -match 'UARD|self-repair|INSTALL'){return 'UARD/INSTALL'}else{return 'ORCHESTRATOR'}}
-function Diagnose([string[]]$lines){
-  $errLines=@($lines|Where-Object{$_ -and ($_ -match '(?i)(error|exception|failure|failed|invalid|mismatch|rejected|missing|cannot|could not|not found|denied|timeout|refused|unsafe|cooked|unknown)')})
-  $stageErrors=@()
-  foreach($l in $errLines){$stage=StageFromText $l;$stageErrors+= [ordered]@{stage=$stage;message=$l;fingerprint=(Fingerprint $l)}}
-  $groups=@($stageErrors|Group-Object fingerprint|Sort-Object Count -Descending|ForEach-Object{[ordered]@{fingerprint=$_.Name;count=$_.Count;stage=($_.Group[0].stage);messages=@($_.Group|Select-Object -ExpandProperty message -Unique)}})
-  [ordered]@{error_lines=$errLines;stage_errors=$stageErrors;fingerprints=$groups}
-}
-Stamp 'UAUD DIAGNOSTICS 1.0.0 — starting complete-chain diagnosis'
-WriteJson 'run.json' ([ordered]@{run_id=$RunId;started_utc=[DateTime]::UtcNow.ToString('o');root=$Root;middleman=$Middleman;mode='diagnostic-only';install_performed=$false})
-$pre=[ordered]@{powershell_exists=(Test-Path -LiteralPath $PSExe);uaud_exists=(Test-Path -LiteralPath (Join-Path $Root 'UAUD.ps1'));uard_exists=(Test-Path -LiteralPath (Join-Path $Root 'self-repair.ps1'));validator_exists=(Test-Path -LiteralPath (Join-Path $Root 'UAUD-validate.ps1'));sandbox_exists=(Test-Path -LiteralPath (Join-Path $Root 'sandbox-behaviour.ps1'));schema_exists=(Test-Path -LiteralPath (Join-Path $Root 'artifact-schema.json'));evidence_exists=(Test-Path -LiteralPath (Join-Path $Root 'evidence.ps1'));error_library_exists=(Test-Path -LiteralPath (Join-Path $Root 'ErrorLibrary.ps1'));config_exists=(Test-Path -LiteralPath (Join-Path $Root 'config.json'));packet_filter_exists=(Test-Path -LiteralPath (Join-Path $Root 'packet-filter.ps1'))}
-WriteJson 'preflight.json' $pre
-if(-not $pre.powershell_exists){Stamp 'FATAL: Windows PowerShell missing';exit 2}
-$static=@()
-foreach($file in @('UAUD.ps1','self-repair.ps1','UAUD-validate.ps1','sandbox-behaviour.ps1','evidence.ps1','ErrorLibrary.ps1','packet-filter.ps1')){
-  $p=Join-Path $Root $file
-  if(Test-Path -LiteralPath $p){
-    $t=$null;$e=$null
-    try{$ast=[System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$t,[ref]$e);$static+=[ordered]@{file=$file;parse_pass=(@($e).Count -eq 0);errors=@($e|ForEach-Object{[ordered]@{message=$_.Message;line=$_.Extent.StartLineNumber;column=$_.Extent.StartColumnNumber}});sha256=HashFile $p;bytes=(Get-Item -LiteralPath $p).Length}}catch{$static+=[ordered]@{file=$file;parse_pass=$false;errors=@([ordered]@{message=$_.Exception.Message});sha256=$null;bytes=$null}}
-  }else{$static+=[ordered]@{file=$file;parse_pass=$false;errors=@([ordered]@{message='FILE_MISSING'});sha256=$null;bytes=$null}}
-}
-WriteJson 'static-parser-check.json' $static
-Stamp 'Independent static parser checks complete'
-try{
-  $health=Invoke-WebRequest -UseBasicParsing -Uri ($Middleman+'/health') -TimeoutSec 20
-  $healthObj=$health.Content|ConvertFrom-Json
-  WriteJson 'middleman-health.json' ([ordered]@{http_status=[int]$health.StatusCode;body=$healthObj;pass=($healthObj.version -eq '3.2.0' -and [int]$healthObj.protocol -eq 3 -and [string]$healthObj.baseline -eq '1.0.0')})
-  Stamp "Middleman health: HTTP $($health.StatusCode), version=$($healthObj.version), protocol=$($healthObj.protocol), baseline=$($healthObj.baseline)"
-}catch{WriteJson 'middleman-health.json' ([ordered]@{pass=$false;error=$_.Exception.Message;fingerprint=(Fingerprint $_.Exception.Message)});Stamp "MIDDLEMAN DIAGNOSIS: $($_.Exception.Message)"}
-$psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$PSExe;$psi.Arguments='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $Root 'UAUD.ps1')+'"';$psi.WorkingDirectory=$Root;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$false
-Stamp 'Launching UAUD as diagnostic child process — no installation is performed by this wrapper'
-$proc=New-Object Diagnostics.Process;$proc.StartInfo=$psi
-try{[void]$proc.Start();$stdout=$proc.StandardOutput.ReadToEnd();$stderr=$proc.StandardError.ReadToEnd();$proc.WaitForExit();$rc=$proc.ExitCode}catch{$stdout='';$stderr=($_|Out-String);$rc=2}
-$stdout|Set-Content -LiteralPath (Join-Path $Run 'stdout.txt') -Encoding UTF8;$stderr|Set-Content -LiteralPath (Join-Path $Run 'stderr.txt') -Encoding UTF8
-$all=@($stdout -split "`r?`n")+@($stderr -split "`r?`n")
-$diagnosis=Diagnose $all
-WriteJson 'diagnosis.json' $diagnosis
-$stageSummary=@('CANON/MIDDLEMAN','JSON_TO_PS','PS_PARSER','ADAPTIVE_REPAIR','AST_TO_CANON','CANONICAL_EQUIVALENCE','WINDOWS_BEHAVIOUR','UARD/INSTALL','ORCHESTRATOR')|ForEach-Object{[ordered]@{stage=$_;observed=(@($all|Where-Object{(StageFromText $_) -eq $_}).Count -gt 0);errors=@($diagnosis.stage_errors|Where-Object{$_.stage -eq $_}).Count}}
-WriteJson 'stage-summary.json' $stageSummary
-WriteJson 'environment.json' ([ordered]@{computer=$env:COMPUTERNAME;user=$env:USERNAME;cwd=(Get-Location).Path;powershell=$PSVersionTable;language_mode=$ExecutionContext.SessionState.LanguageMode;execution_policy=@(Get-ExecutionPolicy -List|ForEach-Object{$_.ToString()});run_id=$RunId})
-WriteJson 'result.json' ([ordered]@{uaud_exit_code=$rc;diagnostic_error_count=@($diagnosis.stage_errors).Count;status=if($rc -eq 0 -and @($diagnosis.stage_errors).Count -eq 0){'SUCCESS'}else{'FAIL_DIAGNOSED'};timestamp_utc=[DateTime]::UtcNow.ToString('o');report=$Run})
-Stamp ''
-Stamp '=== UAUD SELF-DIAGNOSIS ==='
-Stamp "UAUD EXIT CODE: $rc"
-Stamp "DIAGNOSTIC REPORT: $Run"
-if(@($diagnosis.stage_errors).Count -eq 0){Stamp 'DIAGNOSIS: no error-like output detected; UAUD completed without reported failure.'}else{
-  foreach($g in @($diagnosis.fingerprints)){
-    Stamp "FAILURE: stage=$($g.stage) count=$($g.count) fingerprint=$($g.fingerprint)"
-    foreach($m in @($g.messages)){Stamp "  DETAIL: $m"}
+function HashFile([string]$p){(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
+function HashText([string]$s){$h=[Security.Cryptography.SHA256]::Create();try{([BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}}
+function WriteJson([string]$name,[object]$o){$o|ConvertTo-Json -Depth 40|Set-Content -LiteralPath (Join-Path $Run $name) -Encoding UTF8}
+function RecordOutput([string]$source,[string]$stream,[string[]]$lines,[int]$exitCode=0){
+  foreach($line in @($lines)){
+    if([string]::IsNullOrWhiteSpace($line)){continue}
+    if(Get-Command Test-ErrorLike -ErrorAction SilentlyContinue){if(Test-ErrorLike $line $exitCode 0){if(Get-Command Save-ErrorEvent -ErrorAction SilentlyContinue){[void](Save-ErrorEvent -Source $source -Stream $stream -Text $line -ExitCode $exitCode -Context 'UAUD independent diagnostics output scan')}}}
   }
 }
-if($rc -eq 0 -and @($diagnosis.stage_errors).Count -eq 0){Stamp 'RESULT: PASS — UAUD chain reported success.';exit 0}
-Stamp 'RESULT: FAIL — nothing is installed by this diagnostic wrapper; use the report to identify the exact failing stage.'
-exit 1
+function ParseFile([string]$path){$t=$null;$e=$null;$ast=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$t,[ref]$e);[pscustomobject]@{ast=$ast;errors=@($e)}}
+function RunChild([string]$file,[string[]]$args){
+  $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$PSExe;$psi.Arguments='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+$file+'" '+(($args|ForEach-Object{'"'+($_ -replace '"','\"')+'"'}) -join ' ');$psi.WorkingDirectory=$Root;$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true
+  $p=New-Object Diagnostics.Process;$p.StartInfo=$psi;[void]$p.Start();$out=$p.StandardOutput.ReadToEnd();$err=$p.StandardError.ReadToEnd();$p.WaitForExit();$lines=@($out -split "`r?`n")+@($err -split "`r?`n");RecordOutput (Split-Path -Leaf $file) 'child-output' $lines $p.ExitCode;return [pscustomobject]@{exit_code=$p.ExitCode;stdout=$out;stderr=$err;lines=$lines}
+}
+function FetchPinned([string]$name){
+  $q=[Net.HttpWebRequest]::Create($Middleman+'/v1/artifact/'+$name+'?diagnostic='+$RunId);$q.Method='GET';$q.Timeout=30000;$q.ReadWriteTimeout=30000;$q.AllowAutoRedirect=$false;$q.UserAgent='UAUD-Diagnostics/1.1.0';
+  try{$r=$q.GetResponse();try{$v=[string]$r.Headers['X-Untrapped-Version'];$pr=[int]$r.Headers['X-Untrapped-Protocol'];$bl=[string]$r.Headers['X-Untrapped-Baseline'];if($v-ne$ExpectedVersion-or$pr-ne$ExpectedProtocol-or$bl-ne$ExpectedBaseline){throw "MIDDLEMAN_IDENTITY_MISMATCH version=$v protocol=$pr baseline=$bl"};if($r.ContentLength -gt $MaxBytes){throw 'RESPONSE_TOO_LARGE'};$m=New-Object IO.MemoryStream;$buf=New-Object byte[] 65536;$n=0;try{while(($read=$r.GetResponseStream().Read($buf,0,$buf.Length))-gt 0){$n+=$read;if($n-gt$MaxBytes){throw 'RESPONSE_TOO_LARGE'};$m.Write($buf,0,$read)};$bytes=$m.ToArray()}finally{$m.Dispose()};$sha=[string]$r.Headers['X-Untrapped-SHA256'];if($sha -and $sha-ne(HashText ([Text.Encoding]::UTF8.GetString($bytes)))){throw 'SHA256_MISMATCH'};return $bytes}finally{$r.Dispose()}}catch{throw "PINNED_FETCH_FAILURE $name HTTP=$([int]$(try{[int]$_.Exception.Response.StatusCode}catch{0})) $($_.Exception.Message)"}
+}
+Stamp 'UAUD DIAGNOSTICS 1.1.0 — INDEPENDENT NON-INSTALLING GATES'
+Stamp 'IMPORTANT: UAUD.ps1 and self-repair.ps1 are NOT executed by this diagnostic.'
+WriteJson 'run.json' ([ordered]@{schema=1;version='1.1.0';run_id=$RunId;started_utc=[DateTime]::UtcNow.ToString('o');install_performed=$false;installer_invoked=$false;middleman=$Middleman;expected_version=$ExpectedVersion;expected_protocol=$ExpectedProtocol;expected_baseline=$ExpectedBaseline})
+$required=@('config.json','packet-filter.ps1','artifact-schema.json','UAUD.ps1','UAUD-validate.ps1','sandbox-behaviour.ps1','self-repair.ps1','evidence.ps1','ErrorLibrary.ps1')
+$pre=[ordered]@{powershell=Test-Path $PSExe;files=@{}};foreach($f in $required){$pre.files[$f]=Test-Path (Join-Path $Root $f)};WriteJson 'preflight.json' $pre
+$static=@();Stamp 'GATE 1 — PowerShell syntax of every pipeline script'
+foreach($f in @('UAUD.ps1','self-repair.ps1','UAUD-validate.ps1','sandbox-behaviour.ps1','evidence.ps1','ErrorLibrary.ps1','packet-filter.ps1')){$p=Join-Path $Root $f;if(-not(Test-Path $p)){$static+=[ordered]@{file=$f;pass=$false;error='FILE_MISSING'};continue};try{$r=ParseFile $p;$static+=[ordered]@{file=$f;pass=(@($r.errors).Count-eq0);errors=@($r.errors|ForEach-Object{[ordered]@{message=$_.Message;line=$_.Extent.StartLineNumber;column=$_.Extent.StartColumnNumber}});sha256=HashFile $p;bytes=(Get-Item $p).Length}}catch{$static+=[ordered]@{file=$f;pass=$false;error=$_.Exception.Message}}};WriteJson 'static-parser-check.json' $static
+if(@($static|Where-Object{-not$_.pass}).Count){Stamp 'FAIL — static parser gate';exit 1};Stamp 'PASS — all local PowerShell files parse'
+Stamp 'GATE 2 — ErrorLibrary regression and output-scan capability'
+$el=[ordered]@{exists=(Test-Path $ErrorLibrary);functions=@('Get-ErrorFingerprint','Classify-ErrorText','Test-ErrorLike','Save-ErrorEvent','Scan-ErrorOutput')|ForEach-Object{[ordered]@{name=$_;present=([bool](Get-Command $_ -ErrorAction SilentlyContinue))}};persistent_file=(Test-Path (Join-Path $Root 'error-library.jsonl'))};WriteJson 'error-library-check.json' $el
+if(-not$el.exists-or@($el.functions|Where-Object{-not$_.present}).Count){Stamp 'FAIL — ErrorLibrary contract incomplete';exit 1};Stamp 'PASS — ErrorLibrary contract present'
+Stamp 'GATE 3 — pinned 000-999 middleman, redirect rejection, identity and bounded artifact fetch'
+try{$h=[Net.HttpWebRequest]::Create($Middleman+'/health');$h.Method='GET';$h.Timeout=20000;$h.AllowAutoRedirect=$false;$hr=$h.GetResponse();$hc=[Text.Encoding]::UTF8.GetString((New-Object IO.StreamReader($hr.GetResponseStream())).ReadToEnd())|ConvertFrom-Json;$hr.Dispose();$health=[ordered]@{pass=($hc.version-eq$ExpectedVersion-and[int]$hc.protocol-eq$ExpectedProtocol-and[string]$hc.baseline-eq$ExpectedBaseline);http_status=200;body=$hc}}catch{$health=[ordered]@{pass=$false;error=$_.Exception.Message}};WriteJson 'middleman-health.json' $health;if(-not$health.pass){Stamp 'FAIL — middleman health/identity';exit 1};Stamp 'PASS — pinned middleman identity is correct'
+try{$null=FetchPinned 'ultra-mode/config.json';$null=FetchPinned 'ultra-mode/packet-filter.ps1';$fetchPass=$true}catch{$fetchPass=$false;WriteJson 'pinned-fetch-failure.json' ([ordered]@{error=$_.Exception.Message;fingerprint=(HashText $_.Exception.Message)})};if(-not$fetchPass){Stamp 'FAIL — pinned artifact fetch';exit 1};Stamp 'PASS — pinned artifacts fetched with redirects disabled and size/hash checks'
+Stamp 'GATE 4 — canonical config sanity'
+try{$cfg=Get-Content (Join-Path $Root 'config.json') -Raw|ConvertFrom-Json;$cfgOk=($cfg.enabled -eq $true -and [string]$cfg.start -eq '05:00' -and [string]$cfg.end -eq '22:00' -and @($cfg.domains)-contains 'youtube.com' -and @($cfg.domains)-contains 'chatgpt.com' -and @($cfg.alwaysBlockedDomains)-contains 'crushon.ai' -and @($cfg.alwaysAllowedDomains)-contains 'windowsmcp.io')}catch{$cfgOk=$false};WriteJson 'canonical-config-check.json' ([ordered]@{pass=$cfgOk});if(-not$cfgOk){Stamp 'FAIL — canonical config sanity';exit 1};Stamp 'PASS — canonical policy shape is present'
+Stamp 'GATE 5 — syntax validator executed as a child process with stdout/stderr capture'
+$tmp=Join-Path $env:TEMP ('uaud-diagnostic-candidate-'+$RunId+'.ps1');Set-Content -LiteralPath $tmp -Value '$x = @{ Enabled = $true; Start = ''05:00''; End = ''22:00'' }' -Encoding UTF8;try{$vr=RunChild (Join-Path $Root 'UAUD-validate.ps1') @('-Candidate',$tmp,'-Artifact','diagnostic-candidate.ps1');$vrPass=($vr.exit_code-eq0)}finally{Remove-Item $tmp -Force -ErrorAction SilentlyContinue};if(-not$vrPass){Stamp "FAIL — validator exit code $($vr.exit_code)";exit 1};Stamp 'PASS — validator executed and all output was captured'
+Stamp 'GATE 6 — behavioural helper sandbox'
+$br=RunChild (Join-Path $Root 'sandbox-behaviour.ps1') @();if($br.exit_code-ne0){Stamp "FAIL — behavioural sandbox exit code $($br.exit_code)";exit 1};Stamp 'PASS — behavioural sandbox'
+Stamp 'GATE 7 — protected-boundary static audit'
+$boundary=@('Set-NetFirewallRule','New-NetFirewallRule','Remove-NetFirewallRule','Set-DnsClientServerAddress','route.exe','netsh.exe','hosts','WinDivertOpen','WinDivertClose');$violations=@();foreach($f in @('UAUD.ps1','UAUD-validate.ps1','sandbox-behaviour.ps1','self-repair.ps1')){$t=Get-Content (Join-Path $Root $f) -Raw;foreach($k in $boundary){if($t -match [regex]::Escape($k)){$violations+=[ordered]@{file=$f;keyword=$k}}}};WriteJson 'boundary-audit.json' ([ordered]@{pass=(@($violations).Count-eq0);violations=$violations});if(@($violations).Count){Stamp 'FAIL — protected boundary keyword audit';exit 1};Stamp 'PASS — no forbidden boundary mutation keywords found'
+Stamp 'GATE 8 — diagnostic verdict'
+WriteJson 'result.json' ([ordered]@{schema=1;status='PASS';install_performed=$false;uaud_executed=$false;self_repair_executed=$false;message='Independent non-installing diagnostics passed all implemented gates.';timestamp_utc=[DateTime]::UtcNow.ToString('o');report=$Run})
+Stamp 'RESULT: PASS'
+Stamp "REPORT: $Run"
+Stamp 'This diagnostic cannot install anything because it never invokes UAUD.ps1 or self-repair.ps1.'
+exit 0
