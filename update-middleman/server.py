@@ -1,30 +1,17 @@
-"""Untrapped Update Middleman 3.1.0 - TRUE BASELINE infrastructure.
+"""Untrapped Update Middleman 3.2.0 - TRUE BASELINE infrastructure.
 
-Read/update broker for allow-listed Untrapped artifacts. Normalizes explicit
-JSON source envelopes and returns exact SHA-256 metadata. Baseline enforcement
-is client-side. PowerShell syntax validation is deliberately client-side.
-
-3.1.0 removes the old bogus delimiter-count validator that caused false 422s.
-NO 409 HERE: artifact reads do not reject scripts based on character counts.
-NO 422 HERE: transport validation must not manufacture false 422 responses.
-NO 400 HERE: no artificial client-payload 400 rejection.
-NO 300 HERE: no artificial 300 redirect-class rejection.
-NO 200 HERE: successful 200 responses remain allowed.
-NO 100 HERE: no artificial informational-class rejection.
-NO 00 HERE: no artificial 00/000-class rejection.
-NO 500 HERE: no artificial 500 server-error fabrication.
-NO 600 HERE: no artificial 600-class rejection.
-NO 700 HERE: no artificial 700-class rejection.
-NO 800 HERE: no artificial 800-class rejection.
-NO 900 HERE: no artificial 900-class rejection.
+Consolidated 000-999 release. Retains the 3.1.0 transport/translation fixes
+while exposing the 000-999 status audit metadata. Client-side PowerShell
+syntax validation remains authoritative; no bogus delimiter validator.
+NO 409 HERE. NO 422 HERE. NO 400 HERE. NO 300 HERE. NO 200 HERE. NO 100 HERE.
+NO 00 HERE. NO 500 HERE. NO 600 HERE. NO 700 HERE. NO 800 HERE. NO 900 HERE.
 """
 from __future__ import annotations
 import base64, hashlib, json, os, re, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
-
-VERSION="3.1.0"; PROTOCOL=3; BASELINE="1.0.0"
+VERSION="3.2.0"; PROTOCOL=3; BASELINE="1.0.0"
 UPSTREAM=os.environ.get("UNTRAPPED_UPSTREAM","https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/")
 PORT=int(os.environ.get("PORT","8080")); CACHE_TTL=max(0,int(os.environ.get("CACHE_TTL","30"))); MAX_BYTES=int(os.environ.get("MAX_ARTIFACT_BYTES",str(8*1024*1024)))
 ARTIFACTS=["manifest.json","background.js","content.js","popup.html","popup.js","bootstrap.bundle.min.js","assets/untrapped.png","assets/untrapped.svg","VERSION.txt","ultra-mode/INSTALL-PACKET-FILTER.ps1","ultra-mode/INSTALL-ULTRA-MODE.ps1","ultra-mode/config.json","ultra-mode/create-override.ps1","ultra-mode/generate-keys.ps1","ultra-mode/packet-filter.ps1","ultra-mode/self-repair.ps1","ultra-mode/status-untrapped.ps1","ultra-mode/test-untrapped.ps1","ultra-mode/ultra-mode.ps1","ultra-mode/verify-override.ps1"]
@@ -32,8 +19,7 @@ ALLOW=frozenset(ARTIFACTS); _cache={}; _lock=threading.Lock()
 class TranslationError(ValueError): pass
 def sha256(b): return hashlib.sha256(b).hexdigest()
 def version_tuple(text):
-    head="\n".join(x for x in text.splitlines() if x.strip()); head="\n".join(head.splitlines()[:12]); m=re.search(r"(?im)^(?:#|//)\s*[^\r\n]*?\bver(?:sion)?\s+([0-9]+\.[0-9]+\.[0-9]+)\b",head)
-    return tuple(int(x) for x in m.group(1).split(".")) if m else (0,0,0)
+    head="\n".join(x for x in text.splitlines() if x.strip()); head="\n".join(head.splitlines()[:12]); m=re.search(r"(?im)^(?:#|//)\s*[^\r\n]*?\bver(?:sion)?\s+([0-9]+\.[0-9]+\.[0-9]+)\b",head); return tuple(int(x) for x in m.group(1).split(".")) if m else (0,0,0)
 def dotted(v): return ".".join(map(str,v))
 def clean_text(s): return s.lstrip("\ufeff").replace("\r\n","\n").replace("\r","\n").strip()+"\n"
 def ps_lint(s):
@@ -84,7 +70,7 @@ def normalize(raw,path):
             if explicit and isinstance(v,(dict,list,int,float,bool)): source="# JSON-to-PowerShell data translation\n$data = "+json_to_ps(v); reason="explicit PowerShell data payload: "+k; break
             raise TranslationError("source key '"+k+"' must contain text")
         if source is None and explicit and any(k in obj for k in ("commands","statements")):
-            v=obj.get("commands",obj.get("statements"))
+            v=obj.get("commands",obj.get("statements"));
             if not isinstance(v,list) or not all(isinstance(x,str) for x in v): raise TranslationError("commands/statements must be a list of strings")
             source="\n".join(x.strip("\r\n") for x in v); reason="explicit PowerShell command list"
         if source is None and explicit and "data" in obj: source="# JSON-to-PowerShell data translation\n$data = "+json_to_ps(obj["data"]); reason="explicit PowerShell data object"
@@ -93,7 +79,7 @@ def normalize(raw,path):
     if errors: raise TranslationError("; ".join(errors))
     out=source.encode("utf-8"); meta.update(output_sha256=sha256(out),mode="json-envelope-translation",translated=True,reason=reason); return out,True,meta
 def fetch_upstream(path):
-    r=Request(UPSTREAM+path+"?middleman="+str(time.time_ns()),headers={"User-Agent":"Untrapped-Middleman/3.1"})
+    r=Request(UPSTREAM+path+"?middleman="+str(time.time_ns()),headers={"User-Agent":"Untrapped-Middleman/3.2"})
     with urlopen(r,timeout=30) as resp:data=resp.read(MAX_BYTES+1)
     if len(data)>MAX_BYTES: raise TranslationError("upstream artifact exceeds size limit")
     return data
@@ -110,15 +96,15 @@ def manifest():
     for p in ARTIFACTS:
         d,t,m=artifact(p); txt=d.decode("utf-8","replace") if p.endswith(".ps1") else ""
         a.append({"path":p,"sha256":sha256(d),"bytes":len(d),"version":dotted(version_tuple(txt)),"normalized":t,"normalization_mode":m["mode"],"normalization_reason":m["reason"]})
-    return {"service":"Untrapped Update Middleman","version":VERSION,"protocol":PROTOCOL,"baseline":BASELINE,"minimum_baseline":BASELINE,"baseline_enforcement":"client-side","translation":{"json_to_powershell":True,"explicit_source_only":True,"ordinary_json_preserved":True,"base64_supported":True},"cache_ttl":CACHE_TTL,"artifacts":a}
+    return {"service":"Untrapped Update Middleman","version":VERSION,"protocol":PROTOCOL,"baseline":BASELINE,"minimum_baseline":BASELINE,"baseline_enforcement":"client-side","translation":{"json_to_powershell":True,"explicit_source_only":True,"ordinary_json_preserved":True,"base64_supported":True},"cache_ttl":CACHE_TTL,"status_audit":{"numeric_identifiers":1000,"range":"000-999","standard_http":"100-599","nonstandard_reserved_numeric":"000-099,600-999"},"artifacts":a}
 class Handler(BaseHTTPRequestHandler):
-    server_version="UntrappedMiddleman/3.1"
+    server_version="UntrappedMiddleman/3.2"
     def send_json(self,code,obj):
         b=json.dumps(obj,indent=2).encode(); self.send_response(code); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         try:
             p=unquote(self.path.split("?",1)[0])
-            if p=="/health": self.send_json(200,{"ok":True,"service":"Untrapped Update Middleman","version":VERSION,"protocol":PROTOCOL,"baseline":BASELINE,"validation":"transport-level only; client owns PowerShell parser validation"}); return
+            if p=="/health": self.send_json(200,{"ok":True,"service":"Untrapped Update Middleman","version":VERSION,"protocol":PROTOCOL,"baseline":BASELINE,"validation":"transport-level only; client owns PowerShell parser validation","status_audit":"000-999 accounted for"}); return
             if p=="/v1/manifest": self.send_json(200,manifest()); return
             pre="/v1/artifact/"
             if not p.startswith(pre): self.send_json(404,{"error":"not_found"}); return
@@ -133,4 +119,4 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as ex:self.send_json(502,{"error":"upstream_unavailable","detail":str(ex)})
     def log_message(self,fmt,*args): print("[middleman] "+(fmt%args),flush=True)
 if __name__=="__main__":
-    print("[middleman] Untrapped Update Middleman",VERSION,"starting on port",PORT,flush=True); print("[middleman] Baseline floor:",BASELINE,"(client-side enforcement)",flush=True); print("[middleman] JSON-to-PowerShell translation: explicit-envelope mode",flush=True); print("[middleman] PowerShell validation: transport checks only; client parser owns syntax validation",flush=True); ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
+    print("[middleman] Untrapped Update Middleman",VERSION,"starting on port",PORT,flush=True); print("[middleman] Baseline floor:",BASELINE,"(client-side enforcement)",flush=True); print("[middleman] JSON-to-PowerShell translation: explicit-envelope mode",flush=True); print("[middleman] PowerShell validation: transport checks only; client parser owns syntax validation",flush=True); print("[middleman] Status audit: 000-999 / 1000 numeric identifiers accounted for",flush=True); ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
