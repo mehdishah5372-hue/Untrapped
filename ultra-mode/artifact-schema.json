@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "artifact": "packet-filter.ps1",
+  "canonical": "config.json",
+  "required_functions": [
+    "Get-Config",
+    "Normalize-Domains",
+    "Test-Config",
+    "Test-UltraActive",
+    "Test-OverrideActive",
+    "Get-DomainIPs",
+    "New-WinDivertFilter"
+  ],
+  "required_policy": {
+    "scheduled_window": { "start": "05:00", "end": "22:00" },
+    "scheduled_domains_source": "config.json:domains",
+    "always_blocked_source": "config.json:alwaysBlockedDomains",
+    "always_allowed_source": "config.json:alwaysAllowedDomains",
+    "tls_tcp_port": 443,
+    "quic_udp_port": 443,
+    "direction": "outbound",
+    "loopback_excluded": true,
+    "drop_flag": true,
+    "override_source": "override-until.txt",
+    "override_is_only_policy_bypass": true
+  },
+  "forbidden_mutations": [
+    "Windows Firewall",
+    "WFP",
+    "Hosts",
+    "DNS server configuration",
+    "routes",
+    "VPN",
+    "proxy",
+    "network adapters",
+    "override policy"
+  ]
+}
