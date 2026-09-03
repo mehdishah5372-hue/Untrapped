@@ -61,29 +61,27 @@ function Save-ErrorEvent {
 
 function Get-ErrorCount([string]$Fingerprint) {
     if (-not (Test-Path -LiteralPath $ErrorLibraryPath)) { return 0 }
-    try {
-        return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
-    } catch { return 0 }
+    try { return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count }
+    catch { return 0 }
 }
 
-# Checker-only policy. The full batch is evaluated first, then individual lines are
-# passed to the unchanged reporter. This prevents process/HTTP status from turning
-# unrelated test prose into events.
+# Checker-only policy. The complete batch is evaluated first, then individual lines
+# are passed to the unchanged reporter. Strong machine evidence wins over prose.
 function Test-DiagnosticNarrative([string]$Text) {
     $t = [string]$Text
     if ([string]::IsNullOrWhiteSpace($t)) { return $true }
-    return [bool]($t -match '(?i)^(?:\s*(?:pass|passed|success|successful|ok)\b|\[\s*(?:regression\s+)?pass\s*\]|\s*no\s+errors?\s+(?:were\s+)?found\b|\s*this\s+test\s+(?:verifies|checks|ensures)\b|\s*the\s+previous\s+(?:failure|error)\s+(?:is|was)\s+(?:intentionally|deliberately)\b|\s*http\s+\d+\s+.*(?:fixture|regression)\b)')
+    return [bool]($t -match '(?i)^(?:\s*(?:pass|passed|success|successful|ok)\b|\[\s*(?:regression\s+)?pass\s*\]|\s*no\s+errors?\s+(?:were\s+)?found\b|\s*no\s+error\s+occurred\b|\s*this\s+test\s+(?:verifies|checks|ensures)\b|\s*the\s+previous\s+(?:failure|error)\s+(?:is|was)\s+(?:intentionally|deliberately)\b|\s*the\s+(?:test|operation|step|command)\s+(?:failed|completed)\s+(?:previously|successfully)\b|\s*error\s+handling\s+.*\bcomplete\b|\s*http\s+\d+\s+.*(?:fixture|regression)\b|\s*warning\s*:.*(?:test|expected|narrative)\b)')
 }
 
 function Get-DiagnosticDecision {
     param([string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0)
     $all=@($Lines|ForEach-Object{[string]$_})
     $nonEmpty=@($all|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
-    $batchHasConcrete=($nonEmpty|Where-Object{$_ -match '(?i)(ParserError|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])'}).Count -gt 0
+    $batchHasConcrete=($nonEmpty|Where-Object{$_ -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])'}).Count -gt 0
     $result=@()
     foreach($text in $nonEmpty){
         $narrative=Test-DiagnosticNarrative $text
-        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])')
+        $strong=[bool]($text -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|redirect rejected|Access is denied|The term .* is not recognized|operation timed out|request timed out|timeout occurred|timed out|HTTP\s+(?:408|409|422|425|429)|\b5\d\d\b|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-])
         $generic=[bool]($text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
         $objective=($ExitCode -ne 0 -or $HttpStatus -ge 400)
         $emit=($strong -or ($generic -and -not $narrative) -or ($objective -and -not $narrative))
@@ -96,15 +94,7 @@ function Force-DiagnosticScan {
     param([string]$Source='UNKNOWN',[string]$Artifact='',[string[]]$Lines,[int]$ExitCode=0,[int]$HttpStatus=0,[string]$Stage='', [string]$Context='')
     $decisions=@(Get-DiagnosticDecision -Lines $Lines -ExitCode $ExitCode -HttpStatus $HttpStatus)
     $seen=@{}
-    foreach($d in $decisions){
-        if(-not $d.Emit){continue}
-        $text=[string]$d.Text
-        $category=Classify-ErrorText $text
-        $fp=Get-ErrorFingerprint $text $category
-        if($seen.ContainsKey($fp)){continue}
-        $seen[$fp]=$true
-        [void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))
-    }
+    foreach($d in $decisions){if(-not $d.Emit){continue};$text=[string]$d.Text;$category=Classify-ErrorText $text;$fp=Get-ErrorFingerprint $text $category;if($seen.ContainsKey($fp)){continue};$seen[$fp]=$true;[void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))}
     return @($seen.Keys|ForEach-Object{[pscustomobject]@{fingerprint=$_}})
 }
 
