@@ -1,5 +1,5 @@
 # ErrorLibrary for UARD - persistent, fail-safe diagnostic memory
-$ErrorLibraryVersion = '2.0.0'
+$ErrorLibraryVersion = '2.0.1'
 $ErrorLibraryPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'error-library.jsonl'
 $ErrorLibraryMaxRecordBytes = 32768
 
@@ -16,11 +16,9 @@ function Get-ErrorFingerprint([string]$Text, [string]$Category = 'UNKNOWN') {
     finally { $sha.Dispose() }
 }
 
-# Conservative classifier: classify only after the complete diagnostic batch has been collected.
-# Narrative mentions of "error", "failed", "warning", etc. are deliberately not sufficient by themselves.
 function Classify-ErrorText([string]$Text) {
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    if ($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|Missing\s+.*closing|Unexpected\s+token|Missing\s+\)|Missing\s+\]|Missing\s+})') { return 'PARSER' }
+    if ($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|Missing\s+.*closing|Unexpected\s+token|Missing\s+\)|Missing\s+\]|Missing\s+})') { return 'PARSER' }
     if ($t -match '(?i)(Access is denied|access denied|UnauthorizedAccessException|permission denied|forbidden)') { return 'ACCESS' }
     if ($t -match '(?i)(operation timed out|request timed out|timeout occurred|timed out)') { return 'TIMEOUT' }
     if ($t -match '(?i)(The term .* is not recognized|CommandNotFoundException|cannot find the path|path.*not found)') { return 'NOT_FOUND' }
@@ -28,16 +26,15 @@ function Classify-ErrorText([string]$Text) {
     if ($t -match '(?i)(HTTP\s+409|409\s+Conflict)') { return 'HTTP_409' }
     if ($t -match '(?i)(HTTP\s+(?:408|425|429)|408\s+Request Timeout|425\s+Too Early|429\s+Too Many Requests|HTTP\s+5\d\d)') { return 'NETWORK_TRANSIENT' }
     if ($t -match '(?i)(redirect rejected|HTTP\s+(?:301|302|303|307|308)|301\s+Moved|302\s+Found|307\s+Temporary|308\s+Permanent)') { return 'REDIRECT' }
-    if ($t -match '(?i)(Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|At C:\\.*\.ps1:\d+ char:\d+)') { return 'ERROR' }
+    if ($t -match '(?i)(Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:)') { return 'ERROR' }
     if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { return 'ERROR' }
     return 'UNKNOWN'
 }
 
-# Strong evidence is intentionally structural rather than lexical.
 function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
     if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return $true }
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    return [bool]($t -match '(?i)(ParserError|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
+    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
 }
 
 function Save-ErrorEvent {
@@ -60,32 +57,23 @@ function Save-ErrorEvent {
             syntax_result = $SyntaxResult; context = ([string]$Context).Substring(0, [Math]::Min(([string]$Context).Length, 12000))
         }
         $line = $record | ConvertTo-Json -Compress -Depth 8
-        if ([Text.Encoding]::UTF8.GetByteCount($line) -le $ErrorLibraryMaxRecordBytes) {
-            Add-Content -LiteralPath $ErrorLibraryPath -Value $line -Encoding UTF8
-        }
+        if ([Text.Encoding]::UTF8.GetByteCount($line) -le $ErrorLibraryMaxRecordBytes) { Add-Content -LiteralPath $ErrorLibraryPath -Value $line -Encoding UTF8 }
         return $fingerprint
     } catch { return $null }
 }
 
 function Get-ErrorCount([string]$Fingerprint) {
     if (-not (Test-Path -LiteralPath $ErrorLibraryPath)) { return 0 }
-    try {
-        return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object {
-            try { $_ | ConvertFrom-Json } catch { $null }
-        } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count
-    } catch { return 0 }
+    try { return @(Get-Content -LiteralPath $ErrorLibraryPath -ErrorAction Stop | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.fingerprint -eq $Fingerprint }).Count }
+    catch { return 0 }
 }
 
-# Force-first diagnostic pass.
-# Phase 1: collect and normalize every supplied output line.
-# Phase 2: evaluate structural/process evidence across the entire batch.
-# Phase 3: classify only the strongest evidence; suppress ambiguous narrative text.
-# This prevents a word such as "failed" in a PASS message from becoming an error report.
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
         [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage='', [string]$Context=''
     )
+    # FORCE CHECK: consume the complete stdout/stderr batch before any diagnosis is emitted.
     $all = @($Lines | ForEach-Object { [string]$_ } | Where-Object { $_.Trim().Length -gt 0 })
     $candidates = @()
     foreach($text in $all) {
@@ -102,13 +90,12 @@ function Force-DiagnosticScan {
         $candidates += [pscustomobject]@{Text=$processText;Category=(Classify-ErrorText $processText);Priority=6}
     }
     if($candidates.Count -eq 0) { return @() }
-    $ordered = @($candidates | Sort-Object -Property Priority -Descending)
-    $best = $ordered[0]
+    $best = @($candidates | Sort-Object -Property Priority -Descending)[0]
     $category = [string]$best.Category
     if($category -eq 'UNKNOWN' -and $ExitCode -eq 0 -and $HttpStatus -lt 400) { return @() }
     $confidence = if($ExitCode -ne 0 -or $HttpStatus -ge 400 -or $category -ne 'UNKNOWN'){'HIGH'}else{'LOW'}
     $fp = Save-ErrorEvent -Source $Source -Stream 'force-scan' -Text ([string]$best.Text) -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; force-first; collected_lines=$($all.Count); $Context") -Confidence $confidence
-    if($null -eq $fp){ return @() }
+    if($null -eq $fp) { return @() }
     return @([pscustomobject]@{fingerprint=$fp;category=$category;confidence=$confidence;line_count=$all.Count})
 }
 
@@ -122,12 +109,8 @@ function Scan-ErrorOutput {
 
 function Scan-ErrorLike {
     param(
-        [string]$Source,
-        [string]$Artifact,
-        [string[]]$Lines,
-        [int]$ExitCode=0,
-        [int]$HttpStatus=0,
-        [string]$Stage=''
+        [string]$Source, [string]$Artifact, [string[]]$Lines,
+        [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage=''
     )
     return @(Force-DiagnosticScan @PSBoundParameters)
 }
