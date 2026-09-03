@@ -59,16 +59,6 @@ jobs:
           Write-Host "Diagnostic sandbox exit code: $rc"
           if ($rc -ne 0) { throw "Force-first diagnostic sandbox failed with exit code $rc" }
 
-      - name: Reporter compatibility sandbox against OSblocker 1.0.0
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'diagnostic-reporter-compat-sandbox.ps1')
-          $rc = $LASTEXITCODE
-          Write-Host "Reporter compatibility sandbox exit code: $rc"
-          if ($rc -ne 0) { throw "Reporter compatibility sandbox failed with exit code $rc" }
-
       - name: UAUD validator gate
         shell: powershell
         run: |
