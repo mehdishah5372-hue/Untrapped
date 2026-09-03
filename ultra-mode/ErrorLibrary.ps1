@@ -32,7 +32,6 @@ function Classify-ErrorText([string]$Text) {
     return 'UNKNOWN'
 }
 
-# Reporter: deliberately unchanged from the OSblocker 1.0.0 contract.
 function Save-ErrorEvent {
     param(
         [string]$Source, [string]$Stream, [string]$Text, [int]$ExitCode = 0,
@@ -68,44 +67,37 @@ function Get-ErrorCount([string]$Fingerprint) {
     } catch { return 0 }
 }
 
-# Smarter checker: inspect the complete batch, rank concrete evidence, then call the
-# unchanged reporter with the same fields and output-scan stream used by OSblocker 1.0.0.
+# Smarter checker only. Reporting remains the OSblocker 1.0.0 per-line reporter:
+# schema 1, output-scan, same fields, same context, same dedupe semantics.
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
         [int]$ExitCode=0, [int]$HttpStatus=0, [string]$Stage='', [string]$Context=''
     )
-    $all = @($Lines | ForEach-Object { [string]$_ })
-    $nonEmpty = @($all | Where-Object { $_.Trim().Length -gt 0 })
-    $candidates = @()
+    $all=@($Lines|ForEach-Object{[string]$_})
+    $nonEmpty=@($all|Where-Object{$_.Trim().Length -gt 0})
+    $seen=@{}
+    $selected=@()
 
-    foreach($text in $nonEmpty) {
-        if(Test-ErrorLike $text 0 0) {
-            $category=Classify-ErrorText $text
-            $priority=3
-            if($category -eq 'PARSER'){ $priority=10 }
-            elseif($category -eq 'ACCESS'){ $priority=9 }
-            elseif($category -eq 'TIMEOUT'){ $priority=8 }
-            elseif($category -eq 'NOT_FOUND'){ $priority=7 }
-            elseif($category -eq 'ERROR'){ $priority=6 }
-            $candidates += [pscustomobject]@{Text=$text;Category=$category;Priority=$priority}
+    # Preserve baseline reporter semantics whenever objective process/HTTP evidence exists:
+    # baseline Test-ErrorLike returned true for every non-empty line in these conditions.
+    if($ExitCode -ne 0 -or $HttpStatus -ge 400){
+        $selected=$nonEmpty
+    } else {
+        # Otherwise, inspect the complete batch first and select only concrete error evidence.
+        foreach($text in $nonEmpty){
+            if(Test-ErrorLike $text 0 0){$selected += $text}
         }
     }
 
-    if($HttpStatus -ge 400) {
-        $httpText = if($nonEmpty.Count -gt 0){$nonEmpty -join "`r`n"}else{"HTTP status $HttpStatus"}
-        $candidates += [pscustomobject]@{Text=$httpText;Category=(Classify-ErrorText ("HTTP $HttpStatus $httpText"));Priority=20}
+    foreach($text in $selected){
+        $category=Classify-ErrorText $text
+        $fp=Get-ErrorFingerprint $text $category
+        if($seen.ContainsKey($fp)){continue}
+        $seen[$fp]=$true
+        [void](Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text $text -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; output matched error detector"))
     }
-    if($ExitCode -ne 0) {
-        $processText = if($nonEmpty.Count -gt 0){$nonEmpty -join "`r`n"}else{"process exited with code $ExitCode"}
-        $candidates += [pscustomobject]@{Text=$processText;Category=(Classify-ErrorText $processText);Priority=21}
-    }
-
-    if($candidates.Count -eq 0){ return @() }
-    $best=@($candidates | Sort-Object -Property Priority -Descending)[0]
-    $fp=Save-ErrorEvent -Source $Source -Stream 'output-scan' -Text ([string]$best.Text) -Artifact $Artifact -ExitCode $ExitCode -HttpStatus $HttpStatus -Context ("stage=$Stage; force-first checker; collected_lines=$($all.Count); $Context")
-    if($null -eq $fp){return @()}
-    return @([pscustomobject]@{fingerprint=$fp;category=[string]$best.Category})
+    return @($seen.Keys|ForEach-Object{[pscustomobject]@{fingerprint=$_}})
 }
 
 function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
