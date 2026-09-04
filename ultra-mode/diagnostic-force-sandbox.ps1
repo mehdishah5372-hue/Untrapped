@@ -8,7 +8,8 @@ $ErrorLibraryPath=Join-Path $env:TEMP ('osblocker-diagnostic-sandbox-' + [guid]:
 
 function Legacy-Test([string]$Text,[int]$ExitCode=0,[int]$HttpStatus=0){
     if($ExitCode -ne 0 -or $HttpStatus -ge 400){return $true}
-    return [bool]($Text -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
+    $t=if($null -eq $Text){''}else{[string]$Text}
+    return [bool]($t -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
 }
 function Legacy-Report([string]$Text,[int]$ExitCode=0,[int]$HttpStatus=0){
     $category=Classify-Legacy $Text
