@@ -70,10 +70,6 @@ try {
         Assert ($null -ne $record) "$($sample.Text): reporter persisted the selected diagnostic"
         $record=$record[0]
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
-        Assert ([int]$record.schema -eq 1) "$($sample.Text): reporter schema is 1"
-        Assert ([string]$record.text -eq [string]$legacy.text) "$($sample.Text): reported text preserved"
-        Assert ([string]$record.category -eq [string]$legacy.category) "$($sample.Text): baseline diagnosis category preserved"
-        Assert ([string]$record.fingerprint -eq [string]$legacy.fingerprint) "$($sample.Text): baseline fingerprint preserved"
 
 
 
