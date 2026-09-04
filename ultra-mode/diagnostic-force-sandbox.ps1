@@ -70,7 +70,7 @@ try {
         Assert ($null -ne $record) "$($sample.Text): reporter persisted the selected diagnostic"
         $record=$record[0]
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
-        Assert ([string]$record.stream -eq [string]$legacy.stream) "$($sample.Text): reporter stream unchanged"
+        Assert ([string]$record.stream -eq [string]$legacy.stream) "$($sample.Text): reporter stream unchanged actual=$([string]$record.stream) expected=$([string]$legacy.stream)"
         Assert ([int]$record.schema -eq [int]$legacy.schema) "$($sample.Text): reporter schema unchanged"
         Assert ([string]$record.category -eq [string]$legacy.category) "$($sample.Text): diagnosis category matches OSblocker 1.0.0 for concrete error"
         Assert ([string]$record.fingerprint -eq [string]$legacy.fingerprint) "$($sample.Text): fingerprint matches OSblocker 1.0.0"
