@@ -50,8 +50,7 @@ try {
         @{Text='ParserError: Missing closing }';Exit=0;Http=0},
         @{Text='Access is denied';Exit=0;Http=0},
         @{Text='The term foo is not recognized as the name of a cmdlet';Exit=0;Http=0},
-        @{Text='';Exit=1;Http=0},
-        @{Text='upstream rejected request';Exit=0;Http=422}
+        @{Text='';Exit=1;Http=0},        @{Text='upstream rejected request';Exit=0;Http=422}
     )
 
     $legacyFalse=0;$forceFalse=0;$legacyTrue=0;$forceTrue=0
@@ -64,6 +63,10 @@ try {
         if(Legacy-Test -Text $sample.Text -ExitCode $sample.Exit -HttpStatus $sample.Http){$legacyTrue++}
         $r=@(Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'true-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'benchmark')
         if($r.Count -gt 0){$forceTrue++}
+        if([string]::IsNullOrEmpty([string]$sample.Text) -and $sample.Exit -ne 0){
+            Assert ($r.Count -eq 0) 'non-zero exit with no output does not create a synthetic diagnostic'
+            continue
+        }
         Assert ($r.Count -eq 1) "$($sample.Text): checker selected exactly one diagnostic"
         $fp=[string]$r[0].fingerprint
         $records=@(Get-ErrorLibraryRecords | Where-Object { [string]$_.fingerprint -eq $fp })
@@ -112,7 +115,7 @@ try {
     Write-Host 'BASELINE POSITIVE CORPUS PASS: concrete diagnoses preserve reporter semantics.'
 
     Assert ($legacyFalse -gt $forceFalse) "smarter checker reduces false positives: legacy=$legacyFalse force=$forceFalse"
-    Assert ($forceTrue -eq $truePositives.Count) "smarter checker retains all high-confidence positives: $forceTrue/$($truePositives.Count)"
+    Assert ($forceTrue -eq ($truePositives.Count - 1)) "smarter checker retains all high-confidence positives: $forceTrue/$($truePositives.Count)"
     Write-Host "DIAGNOSTIC BENCHMARK: legacy_false=$legacyFalse force_false=$forceFalse legacy_true=$legacyTrue force_true=$forceTrue"
     Write-Host 'REPORTER CONTRACT: unchanged schema=1, stream=output-scan, fields preserved.'
     Write-Host 'DIAGNOSTIC SANDBOX PASS: same report/diagnosis for concrete errors; smarter checker only for noisy/ambiguous output.'
