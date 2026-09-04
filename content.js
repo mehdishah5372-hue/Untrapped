@@ -3,6 +3,40 @@
 
   const STYLE_ID = "untrapped-focus-mode";
 
+  // Network rules stop normal navigations before the page loads. This guard covers
+  // YouTube's SPA history navigations, which do not necessarily create a new request.
+  function enforceYouTubeUrl() {
+    const policy = window.UntrappedYouTubePolicy;
+    if (!policy || !policy.isYouTubeHost(location.hostname)) return;
+    if (!policy.isAllowedYouTubeUrl(location.href)) {
+      window.stop();
+      location.replace(chrome.runtime.getURL("blocked.html"));
+    }
+  }
+
+  function installNavigationGuard() {
+    enforceYouTubeUrl();
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+    history.pushState = function (...args) {
+      const result = originalPushState.apply(this, args);
+      queueMicrotask(enforceYouTubeUrl);
+      return result;
+    };
+    history.replaceState = function (...args) {
+      const result = originalReplaceState.apply(this, args);
+      queueMicrotask(enforceYouTubeUrl);
+      return result;
+    };
+    window.addEventListener("popstate", enforceYouTubeUrl);
+    window.addEventListener("hashchange", enforceYouTubeUrl);
+    window.addEventListener("yt-navigate-start", enforceYouTubeUrl);
+    window.addEventListener("yt-navigate-finish", enforceYouTubeUrl);
+  }
+
+  installNavigationGuard();
+
+
   // YouTube is a single-page app and frequently replaces DOM nodes. The old
   // implementation hid a handful of elements once, so YouTube could simply
   // recreate them after navigation. Focus mode uses persistent CSS selectors
