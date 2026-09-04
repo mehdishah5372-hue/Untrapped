@@ -1,0 +1,24 @@
+[
+  {
+    "id": 100,
+    "priority": 100,
+    "action": {"type": "allow"},
+    "condition": {
+      "regexFilter": "^https://(?:www\\.|m\\.)?youtube\\.com/watch\\?(?:(?:[^v&=][^&=]*|v[^&=]+)=[^&]*&)*v=2wgg7KtzTrU(?:&(?:[^v&=][^&=]*|v[^&=]+)=[^&]*)*$",
+      "isUrlFilterCaseSensitive": true,
+      "resourceTypes": ["main_frame"]
+    }
+  },
+  {
+    "id": 200,
+    "priority": 10,
+    "action": {"type": "block"},
+    "condition": {"urlFilter": "||youtube.com/", "resourceTypes": ["main_frame", "sub_frame"]}
+  },
+  {
+    "id": 201,
+    "priority": 10,
+    "action": {"type": "block"},
+    "condition": {"urlFilter": "||youtu.be/", "resourceTypes": ["main_frame", "sub_frame"]}
+  }
+]
