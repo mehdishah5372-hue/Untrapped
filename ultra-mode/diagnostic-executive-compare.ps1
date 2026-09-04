@@ -38,6 +38,7 @@ try {
   $wc.DownloadString($BaselineUrl)|Set-Content -LiteralPath $base -Encoding UTF8
   Remove-Variable wc -ErrorAction SilentlyContinue
   $bp=Parse $base;$cp=Parse $Current
+  . $Current
   Assert (@($bp.errors).Count -eq 0) 'pinned OSblocker 1.0.0 reporter parses'
   Assert (@($cp.errors).Count -eq 0) 'candidate reporter/checker parses'
   $cases=@(
