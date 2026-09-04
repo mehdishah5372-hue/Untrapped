@@ -32,7 +32,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $src = Get-Content ./youtube-policy.js -Raw
-          $ctx = [Microsoft.ClearScript.ScriptEngine]$null
           # Validate the policy with a small PowerShell model equivalent; the
           # authoritative browser rule is tested below by parsing its regex.
           $rules = Get-Content ./youtube-rules.json -Raw | ConvertFrom-Json
