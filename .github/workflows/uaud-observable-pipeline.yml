@@ -22,8 +22,9 @@ jobs:
           foreach($f in $files){
             $tokens=$null;$errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$tokens,[ref]$errors)|Out-Null
-            if(@($errors).Count -gt 0){$errors|ForEach-Object{Write-Error ("$($f.FullName):$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber): $($_.Message)")}}
+            if(@($errors).Count -gt 0){$errors|ForEach-Object{Write-Host ("$($f.FullName):$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber): $($_.Message)")}}
             else{Write-Host "PARSE PASS $($f.FullName)"}
+            if(@($errors).Count -gt 0){ throw "PowerShell syntax regression in $($f.FullName)" }
           }
       - name: ErrorLibrary self-test
         shell: pwsh
