@@ -89,7 +89,8 @@ function Get-CheckerEvidenceScore([string]$Text) {
     if ($t -match '(?i)HTTP\s+(?:4|5)\d\d|\b(?:409|422)\b.{0,30}\b(?:Conflict|Unprocessable)') { $score += 70 }
     if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $score += 70 }
     if ($t -match '(?i)\b(?:redirect rejected|301|302|303|307|308)\b') { $score += 60 }
-    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
+    if ($t -match '(?i)^\s*\[(?:ERROR|FATAL)\]\s*') { $score += 60 }
+    if ($t -match '(?i)^\s*(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
     if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict)\b') { $score += 15 }
     if ($t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression)\b') { $score -= 35 }
     if ($t -match '(?i)\b(?:intentionally|expected test|verifies that|example|narrative|fixture)\b') { $score -= 25 }
