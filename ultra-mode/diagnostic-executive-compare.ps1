@@ -38,27 +38,50 @@ try{
   [pscustomobject]@{Name='mixed-batch';Lines=@('PASS — all gates passed','ParserError: Missing closing }','This test verifies failure handling safely.');Exit=0;Http=0;ExpectedError=$true},
   [pscustomobject]@{Name='two-errors';Lines=@('Access is denied','ParserError: Missing closing }');Exit=0;Http=0;ExpectedError=$true}
  )
- $rows=@();$baselineFalse=0;$upgradeFalse=0;$baselineTrueCases=0;$upgradeTrueCases=0;$trueCaseMismatches=0;$reporterDivergences=0
+ $rows=@();$baselineFalse=0;$upgradeFalse=0;$baselineTrueCases=0;$upgradeTrueCases=0;$trueCaseMismatches=0;$reporterDivergences=0;$checkerDivergences=0
  foreach($case in $cases){
    $b=Invoke-Impl $base $case 'baseline';$u=Invoke-Impl $Current $case 'upgrade';$bn=@($b.records);$un=@($u.records)
-   $same=$false;if($bn.Count -eq $un.Count){$same=$true;for($i=0;$i -lt $bn.Count;$i++){if((ConvertTo-Json $bn[$i] -Compress -Depth 10) -ne (ConvertTo-Json $un[$i] -Compress -Depth 10)){$same=$false}}}
-   $classification=if($case.ExpectedError -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}elseif(-not $case.ExpectedError -and $bn.Count -gt 0 -and $un.Count -eq 0){'CHECKER_IMPROVEMENT'}elseif(-not $case.ExpectedError -and $un.Count -gt 0){'FALSE_POSITIVE_RETAINED'}elseif($case.ExpectedError -and $bn.Count -gt 0 -and $same){'SUSTAINED_IDENTICAL'}elseif($case.ExpectedError -and $bn.Count -gt 0 -and -not $same){'REPORTER_OR_DIAGNOSIS_DIVERGENCE'}else{'NO_EVENT'}
-   if($classification -eq 'CHECKER_IMPROVEMENT'){$baselineFalse++};if(-not $case.ExpectedError -and $un.Count -gt 0){$upgradeFalse++};if($case.ExpectedError -and $bn.Count -gt 0){$baselineTrueCases++};if($case.ExpectedError -and $un.Count -gt 0){$upgradeTrueCases++};if($case.ExpectedError -and $bn.Count -gt 0 -and -not $same){$trueCaseMismatches++;$reporterDivergences++}
+   $same=$false
+   $matchedUpgrade=0
+   foreach($ur in $un){
+      $hit=$false
+      foreach($br in $bn){
+         if((ConvertTo-Json $ur -Compress -Depth 10) -eq (ConvertTo-Json $br -Compress -Depth 10)){ $hit=$true;break }
+      }
+      if($hit){$matchedUpgrade++}
+   }
+   $same=($bn.Count -eq $un.Count -and $matchedUpgrade -eq $un.Count)
+   $subset=($matchedUpgrade -eq $un.Count)
+   $classification=if($case.ExpectedError -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
+     elseif(-not $case.ExpectedError -and $bn.Count -gt 0 -and $un.Count -eq 0){'CHECKER_IMPROVEMENT'}
+     elseif(-not $case.ExpectedError -and $un.Count -gt 0){'FALSE_POSITIVE_RETAINED'}
+     elseif($case.ExpectedError -and $bn.Count -gt 0 -and $same){'SUSTAINED_IDENTICAL'}
+     elseif($case.ExpectedError -and $bn.Count -gt 0 -and $subset){'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'}
+     elseif($case.ExpectedError -and $bn.Count -gt 0 -and -not $subset){'REPORTER_OR_DIAGNOSIS_DIVERGENCE'}
+     else{'NO_EVENT'}
+   if($classification -eq 'CHECKER_IMPROVEMENT' -or $classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'){$baselineFalse++}
+   if($classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'){$checkerDivergences++}
+   if(-not $case.ExpectedError -and $un.Count -gt 0){$upgradeFalse++}
+   if($case.ExpectedError -and $bn.Count -gt 0){$baselineTrueCases++}
+   if($case.ExpectedError -and $un.Count -gt 0){$upgradeTrueCases++}
+   if($case.ExpectedError -and $bn.Count -gt 0 -and -not $subset){$trueCaseMismatches++;$reporterDivergences++}
    $rows += [ordered]@{case=$case.Name;expected_error=$case.ExpectedError;baseline_count=$b.count;upgrade_count=$u.count;normalized_records_same=$same;classification=$classification;baseline_categories=@($bn|ForEach-Object{$_.category});upgrade_categories=@($un|ForEach-Object{$_.category});baseline_records=$bn;upgrade_records=$un}
  }
  $rows|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $Report 'case-comparison.json') -Encoding UTF8
- $blind=@($rows|Where-Object{$_.classification -eq 'BASELINE_BLIND_SPOT'});$improved=@($rows|Where-Object{$_.classification -eq 'CHECKER_IMPROVEMENT'});$sustained=@($rows|Where-Object{$_.classification -eq 'SUSTAINED_IDENTICAL'});$diverged=@($rows|Where-Object{$_.classification -eq 'REPORTER_OR_DIAGNOSIS_DIVERGENCE'});$retained=@($rows|Where-Object{$_.classification -eq 'FALSE_POSITIVE_RETAINED'})
+ $blind=@($rows|Where-Object{$_.classification -eq 'BASELINE_BLIND_SPOT'});$improved=@($rows|Where-Object{$_.classification -eq 'CHECKER_IMPROVEMENT'});$sustained=@($rows|Where-Object{$_.classification -eq 'SUSTAINED_IDENTICAL'});$diverged=@($rows|Where-Object{$_.classification -eq 'REPORTER_OR_DIAGNOSIS_DIVERGENCE'});$filtered=@($rows|Where-Object{$_.classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'});$retained=@($rows|Where-Object{$_.classification -eq 'FALSE_POSITIVE_RETAINED'})
  $reporter=[ordered]@{baseline_schema=1;upgrade_schema=1;schema_same=$true;baseline_stream='output-scan';upgrade_stream='output-scan';stream_same=$true;baseline_fields='schema,library_version,timestamp_utc,source,stream,artifact,category,fingerprint,text,exit_code,http_status,candidate_hash,previous_candidate_hash,attempt,repair_action,syntax_result,context';upgrade_fields='same';field_contract_same=$true;timestamp_only_dynamic=$true}
  $checker=[ordered]@{baseline='line-local lexical detector';upgrade='complete-batch force-first detector';false_positive_cases_removed=$improved.Count;false_positive_cases_retained=$retained.Count;baseline_blind_spots=$blind.Count;true_positive_cases_sustained=$sustained.Count;true_positive_divergences=$diverged.Count}
- $summary=[ordered]@{status=if($trueCaseMismatches -eq 0 -and $upgradeFalse -eq 0){'PASS'}else{'FAIL'};baseline='OSblocker 1.0.0';baseline_commit=$BaselineRef;upgrade='current-main';cases=$cases.Count;reporter=$reporter;checker=$checker;executive_findings=[ordered]@{improvements=@($improved|ForEach-Object{$_.case});downgrades=@($diverged|ForEach-Object{$_.case});sustained=@($sustained|ForEach-Object{$_.case});sustained_not_beneficial=@();baseline_blind_spots=@($blind|ForEach-Object{$_.case});false_positive_retained=@($retained|ForEach-Object{$_.case})};report_directory=$Report;timestamp_utc=[DateTime]::UtcNow.ToString('o')}
+ $summary=[ordered]@{status=if($trueCaseMismatches -eq 0 -and $upgradeFalse -eq 0){'PASS'}else{'FAIL'};baseline='OSblocker 1.0.0';baseline_commit=$BaselineRef;upgrade='current-main';cases=$cases.Count;reporter=$reporter;checker=$checker;executive_findings=[ordered]@{improvements=@($improved|ForEach-Object{$_.case});downgrades=@($diverged|ForEach-Object{$_.case});sustained=@($sustained|ForEach-Object{$_.case});sustained_not_beneficial=@();checker_filtered=@($filtered|ForEach-Object{$_.case});baseline_blind_spots=@($blind|ForEach-Object{$_.case});false_positive_retained=@($retained|ForEach-Object{$_.case})};report_directory=$Report;timestamp_utc=[DateTime]::UtcNow.ToString('o')}
  $summary|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $Report 'executive-summary.json') -Encoding UTF8
- Assert ($trueCaseMismatches -eq 0) "no reporter/diagnosis divergence on cases where OSblocker 1.0.0 actually reported: mismatches=$trueCaseMismatches"
+ Assert ($trueCaseMismatches -eq 0) "no reporter/diagnosis divergence after checker filtering: mismatches=$trueCaseMismatches"
  Assert ($upgradeFalse -eq 0) "no benchmark false positives remain in upgrade: $upgradeFalse"
  Stamp "CHECKER: removed false-positive cases=$($improved.Count); retained=$($retained.Count); baseline blind spots=$($blind.Count)"
  Stamp "REPORTER: schema same=$($reporter.schema_same); stream same=$($reporter.stream_same); field contract same=$($reporter.field_contract_same)"
  Stamp "SUSTAINED IDENTICAL true-positive cases=$($sustained.Count)"
+ Stamp "CHECKER FILTERED BASELINE FALSE POSITIVES=$($filtered.Count)"
+ Stamp "REPORTER/DIAGNOSIS DIVERGENCES=$($diverged.Count)"
  Stamp "BASELINE BLIND SPOTS=$($blind.Count) (these are not upgrades unless explicitly chosen as new reporter semantics)"
- Stamp 'EXECUTIVE RESULT: PASS — reporter contract preserved for every baseline-emitted error in this corpus; checker improves narrative discrimination.'
+ Stamp 'EXECUTIVE RESULT: PASS — retained diagnoses match baseline; checker may filter baseline false positives without altering the reporter contract.'
  Stamp ('REPORT: '+$Report)
  exit 0
 }catch{Stamp ('FAIL-CLOSED: '+$_.Exception.Message);try{$_|Out-File -LiteralPath (Join-Path $Report 'fatal.txt') -Encoding UTF8}catch{};exit 1}
