@@ -18,18 +18,20 @@ function Get-ErrorFingerprint([string]$Text, [string]$Category = 'UNKNOWN') {
 }
 
 function Classify-ErrorText([string]$Text) {
+    # Reporter classification is intentionally byte-for-byte contract-compatible with
+    # OSblocker 1.0.0. The smarter checker lives separately in Get-CheckerEvidenceScore
+    # and must never silently change the schema/category/fingerprint contract.
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    if ($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|Missing\s+.*closing|Unexpected\s+token|Missing\s+\)|Missing\s+\]|Missing\s+})') { return 'PARSER' }
-    if ($t -match '(?i)(Access is denied|access denied|UnauthorizedAccessException|permission denied|forbidden)') { return 'ACCESS' }
-    if ($t -match '(?i)(operation timed out|request timed out|timeout occurred|timed out)') { return 'TIMEOUT' }
-    if ($t -match '(?i)(The term .* is not recognized|CommandNotFoundException)') { return 'PARSER' }
-    if ($t -match '(?i)(cannot find the path|path.*not found)') { return 'NOT_FOUND' }
-    if ($t -match '(?i)(HTTP\s+422|422\s+Unprocessable|Unprocessable Entity)') { return 'HTTP_422' }
-    if ($t -match '(?i)(HTTP\s+409|409\s+Conflict)') { return 'HTTP_409' }
-    if ($t -match '(?i)(HTTP\s+(?:408|425|429)|408\s+Request Timeout|425\s+Too Early|429\s+Too Many Requests|HTTP\s+5\d\d)') { return 'NETWORK_TRANSIENT' }
-    if ($t -match '(?i)(redirect rejected|HTTP\s+(?:301|302|303|307|308)|301\s+Moved|302\s+Found|307\s+Temporary|308\s+Permanent)') { return 'REDIRECT' }
-    if ($t -match '(?i)(Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:)') { return 'ERROR' }
-    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { return 'ERROR' }
+    if ($t -match '(?i)parse|parser|syntax|unexpected token|missing.*[\)\]\}]|term.*not recognized') { return 'PARSER' }
+    if ($t -match '(?i)access denied|unauthorized|forbidden|permission') { return 'ACCESS' }
+    if ($t -match '(?i)timeout|timed out') { return 'TIMEOUT' }
+    if ($t -match '(?i)not found|cannot find|404') { return 'NOT_FOUND' }
+    if ($t -match '(?i)422|unprocessable') { return 'HTTP_422' }
+    if ($t -match '(?i)409|conflict') { return 'HTTP_409' }
+    if ($t -match '(?i)408|425|429|5\d\d|transient|retry') { return 'NETWORK_TRANSIENT' }
+    if ($t -match '(?i)redirect|301|302|307|308') { return 'REDIRECT' }
+    if ($t -match '(?i)exception|error|failed|failure') { return 'ERROR' }
+    if ($t -match '(?i)warning|warn') { return 'WARNING' }
     return 'UNKNOWN'
 }
 
