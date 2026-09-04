@@ -94,9 +94,20 @@ function Get-CheckerEvidenceScore([string]$Text) {
 }
 
 function Test-ConcreteDiagnosticEvidence([string]$Text) {
-    return ((Get-CheckerEvidenceScore $Text) -ge 50)
+    $t = if ($null -eq $Text) { '' } else { [string]$Text }
+    # Compatibility floor: only evidence the OSblocker 1.0.0 checker would have
+    # considered an error can become a reporter event. The upgrade may suppress
+    # misleading narrative, but it does not invent new reporter diagnoses.
+    $legacy = [bool]($t -match '(?i)(?:^|\s)(error|exception|failed|failure|denied|timeout|timed out|cannot find|not found|unprocessable|conflict|redirect rejected)(?:\b|:)')
+    if(-not $legacy){ return $false }
+    # Whole-batch/narrative hardening: references to tests, fixtures, examples,
+    # regressions, or intentionally-described failures are not themselves errors.
+    if($t -match '(?i)\b(?:regression|fixture|example|narrative|intentionally|historical|previous|reproduced|verifies|test)\b' -and
+       $t -notmatch '(?i)(?:ParserError|PSSecurityException|CommandNotFoundException|UnauthorizedAccessException|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|At\s+(?:C:\\|[A-Z]:\\).+\.ps1:\d+\s+char:\d+|Access is denied|HTTP\s+(?:4|5)\d\d)'){
+        return $false
+    }
+    return $true
 }
-
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
