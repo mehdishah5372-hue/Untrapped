@@ -44,5 +44,25 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./ultra-mode/UAUD.ps1),[ref]$tokens,[ref]$errors)|Out-Null
           if(@($errors).Count){$errors|Format-List|Out-String|Write-Error;exit 1}
           $s=Get-Content ./ultra-mode/UAUD.ps1 -Raw
-          foreach($x in @('uaud-evidence','input.json','environment.json','stdout.txt','stderr.txt','result.json','ErrorLibrary.ps1','UARD_EXIT_CODE')){if($s -notmatch [regex]::Escape($x)){throw "Observable orchestrator missing: $x"}}
-          Write-Host 'ORCHESTRATOR PASS'
+          $required=@(
+            'Initialize-EvidenceRun',
+            'Write-EvidenceJson',
+            'Write-EvidenceText',
+            'stage-0-canonical',
+            'stage-1-json-ps',
+            'stage-2-parser',
+            'stage-3-repair',
+            'stage-4-ast-canonical',
+            'stage-5-equivalence',
+            'stage-6-windows',
+            'stage-7-report',
+            'stage-8-install',
+            'ErrorLibrary.ps1',
+            'Save-ErrorEvent',
+            'fail-closed'
+          )
+          foreach($x in $required){
+            if($s -notmatch [regex]::Escape($x)){throw "Observable orchestrator missing required capability: $x"}
+          }
+          if($s -match '(?i)UARD_EXIT_CODE'){throw 'Stale UARD_EXIT_CODE contract detected; UAUD must use the actual UARD process exit code.'}
+          Write-Host 'ORCHESTRATOR PASS — verified against current UAUD implementation'
