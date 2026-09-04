@@ -22,7 +22,8 @@ function Classify-ErrorText([string]$Text) {
     if ($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|Missing\s+.*closing|Unexpected\s+token|Missing\s+\)|Missing\s+\]|Missing\s+})') { return 'PARSER' }
     if ($t -match '(?i)(Access is denied|access denied|UnauthorizedAccessException|permission denied|forbidden)') { return 'ACCESS' }
     if ($t -match '(?i)(operation timed out|request timed out|timeout occurred|timed out)') { return 'TIMEOUT' }
-    if ($t -match '(?i)(The term .* is not recognized|CommandNotFoundException|cannot find the path|path.*not found)') { return 'NOT_FOUND' }
+    if ($t -match '(?i)(The term .* is not recognized|CommandNotFoundException)') { return 'PARSER' }
+    if ($t -match '(?i)(cannot find the path|path.*not found)') { return 'NOT_FOUND' }
     if ($t -match '(?i)(HTTP\s+422|422\s+Unprocessable|Unprocessable Entity)') { return 'HTTP_422' }
     if ($t -match '(?i)(HTTP\s+409|409\s+Conflict)') { return 'HTTP_409' }
     if ($t -match '(?i)(HTTP\s+(?:408|425|429)|408\s+Request Timeout|425\s+Too Early|429\s+Too Many Requests|HTTP\s+5\d\d)') { return 'NETWORK_TRANSIENT' }
