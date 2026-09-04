@@ -84,7 +84,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & (Join-Path $PWD 'ultra-mode\sandbox-behaviour.ps1')
+          & (Join-Path $PWD 'ultra-mode\sandbox-behaviour.ps1') -ScriptPath (Join-Path $PWD 'ultra-mode\packet-filter.ps1') -ConfigPath (Join-Path $PWD 'ultra-mode\config.json')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Full UAUD launch-chain gate
