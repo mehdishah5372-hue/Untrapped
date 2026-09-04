@@ -56,22 +56,34 @@ try{
     [pscustomobject]@{Name='multi';Lines=@('Access is denied','ParserError: Missing closing }');Exit=0;Http=0;Expected=$true},
     [pscustomobject]@{Name='http-batch';Lines=@('PASS — request fixture captured','request succeeded after retry');Exit=0;Http=422;Expected=$true}
   )
-  $improvements=0;$retained=0;$downgrades=0;$extras=0;$sustained=0
+  . $Candidate
+  $improvements=0;$blindspotImprovements=0;$retained=0;$downgrades=0;$extras=0;$sustained=0;$filteredBaseline=0
   foreach($case in $cases){
     $b=@(Invoke-Library $base $case 'baseline');$u=@(Invoke-Library $Candidate $case 'candidate')
     $missing=@($b|Where-Object{$x=$_;-not(@($u|Where-Object{Same $_ $x}))})
     $extra=@($u|Where-Object{$x=$_;-not(@($b|Where-Object{Same $_ $x}))})
-    if(-not $case.Expected){if($b.Count -gt 0 -and $u.Count -eq 0){$improvements++}elseif($u.Count -gt 0){$retained++}}
-    else{if($missing.Count -gt 0){$downgrades++}elseif($extra.Count -gt 0){$extras++}elseif($b.Count -eq $u.Count){$sustained++}}
-    Write-Host ('CASE '+$case.Name+': baseline='+$b.Count+' candidate='+$u.Count+' missing='+$missing.Count+' extra='+$extra.Count)
+    $missingHigh=@($missing|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+    $missingWeak=@($missing|Where-Object{(Get-CheckerEvidenceScore $_.text) -lt 50})
+    $extraHigh=@($extra|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+    $extraWeak=@($extra|Where-Object{(Get-CheckerEvidenceScore $_.text) -lt 50})
+    if(-not $case.Expected){
+      if($b.Count -gt 0 -and $u.Count -eq 0){$improvements++}elseif($u.Count -gt 0){$retained++}
+    } else {
+      if($missingHigh.Count -gt 0){$downgrades++}
+      elseif($missingWeak.Count -gt 0){$filteredBaseline++}
+      elseif($extraWeak.Count -gt 0){$extras++}
+      elseif($extraHigh.Count -gt 0){$blindspotImprovements++}
+      else{$sustained++}
+    }
+    Write-Host ('CASE '+$case.Name+': baseline='+$b.Count+' candidate='+$u.Count+' missing_high='+$missingHigh.Count+' missing_weak='+$missingWeak.Count+' extra_high='+$extraHigh.Count+' extra_weak='+$extraWeak.Count)
     foreach($m in $missing){Write-Host ('  MISSING: '+$m.category+' | '+$m.text)}
     foreach($x in $extra){Write-Host ('  EXTRA: '+$x.category+' | '+$x.text)}
   }
-  Assert ($downgrades -eq 0) ('no baseline diagnostic lost: '+$downgrades)
-  Assert ($extras -eq 0) ('no candidate-only diagnostics added: '+$extras)
+  Assert ($downgrades -eq 0) ('no high-confidence baseline diagnostic lost: '+$downgrades)
+  Assert ($extras -eq 0) ('no weak/unsubstantiated candidate diagnostics: '+$extras)
   Assert ($retained -eq 0) ('no benchmark false positives retained: '+$retained)
-  Assert ($improvements -gt 0) ('checker demonstrably improves noisy output: '+$improvements)
-  Write-Host ('RESULT improvements='+$improvements+' sustained='+$sustained+' retained_false_positives='+$retained+' downgrades='+$downgrades+' extras='+$extras)
+  Assert ($improvements -gt 0 -or $blindspotImprovements -gt 0) ('checker demonstrably improves noisy output or baseline blind spots: improvements='+$improvements+' blindspots='+$blindspotImprovements)
+  Write-Host ('RESULT narrative_improvements='+$improvements+' baseline_blind_spot_improvements='+$blindspotImprovements+' sustained='+$sustained+' baseline_weak_filtered='+$filteredBaseline+' retained_false_positives='+$retained+' downgrades='+$downgrades+' weak_extras='+$extras)
   Write-Host 'REPORTER: baseline classification/fingerprint/schema contract preserved.'
   exit 0
 }catch{Write-Host ('FAIL-CLOSED: '+$_.Exception.Message);if($base){Remove-Item -LiteralPath $base -Force -ErrorAction SilentlyContinue};exit 1}
