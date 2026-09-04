@@ -2,7 +2,7 @@ name: UAUD Windows sandbox
 
 on:
   push:
-    branches: [main]
+    branches: [main, diagnostic-smarter-checker-v2]
   pull_request:
     branches: [main]
 
