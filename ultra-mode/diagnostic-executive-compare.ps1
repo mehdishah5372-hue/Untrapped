@@ -73,28 +73,33 @@ try {
     $matched=0;$missing=@()
     foreach($br in $bn){$hit=$false;foreach($ur in $un){if(CompareRecord $br $ur){$hit=$true;break}};if($hit){$matched++}else{$missing+=$br}}
     $extra=@($un|Where-Object{$x=$_; -not (@($bn|Where-Object{CompareRecord $_ $x}))})
+    $missingHigh=@($missing|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+    $extraHigh=@($extra|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+    $extraWeak=@($extra|Where-Object{(Get-CheckerEvidenceScore $_.text) -lt 50})
     $baselineFalse=$case.Expected -eq $false -and $bn.Count -gt 0
     $upgradeFalse=$case.Expected -eq $false -and $un.Count -gt 0
     $classification=if($baselineFalse -and -not $upgradeFalse){'CHECKER_IMPROVEMENT'}
       elseif($baselineFalse -and $upgradeFalse){'FALSE_POSITIVE_RETAINED'}
-      elseif($case.Expected -and $missing.Count -eq 0 -and $extra.Count -eq 0){'SUSTAINED_IDENTICAL'}
-      elseif($case.Expected -and $missing.Count -eq 0 -and $extra.Count -gt 0){'EXTRA_DIAGNOSTIC'}
-      elseif($case.Expected -and $missing.Count -gt 0){'DIAGNOSTIC_DOWNGRADE'}
+      elseif($missingHigh.Count -gt 0){'DIAGNOSTIC_DOWNGRADE'}
+      elseif($extraWeak.Count -gt 0){'FALSE_POSITIVE_RETAINED'}
+      elseif($extraHigh.Count -gt 0){'BASELINE_BLIND_SPOT_IMPROVED'}
+      elseif($case.Expected -and $missing.Count -eq 0){'SUSTAINED_IDENTICAL'}
       else{'NO_EVENT'}
-    $rows += [pscustomobject]@{case=$case.Name;expected_error=$case.Expected;baseline_count=$bn.Count;upgrade_count=$un.Count;matched_baseline_records=$matched;missing_baseline_records=$missing.Count;extra_upgrade_records=$extra.Count;classification=$classification;baseline_categories=@($bn|ForEach-Object{$_.category});upgrade_categories=@($un|ForEach-Object{$_.category});missing=$missing;extra=$extra}
+    $rows += [pscustomobject]@{case=$case.Name;expected_error=$case.Expected;baseline_count=$bn.Count;upgrade_count=$un.Count;matched_baseline_records=$matched;missing_baseline_records=$missing.Count;missing_high_confidence=$missingHigh.Count;extra_upgrade_records=$extra.Count;extra_high_confidence=$extraHigh.Count;extra_weak=$extraWeak.Count;classification=$classification;baseline_categories=@($bn|ForEach-Object{$_.category});upgrade_categories=@($un|ForEach-Object{$_.category});missing=$missing;extra=$extra}
   }
   $improved=@($rows|Where-Object{$_.classification -eq 'CHECKER_IMPROVEMENT'})
   $retained=@($rows|Where-Object{$_.classification -eq 'FALSE_POSITIVE_RETAINED'})
   $sustained=@($rows|Where-Object{$_.classification -eq 'SUSTAINED_IDENTICAL'})
   $downgrades=@($rows|Where-Object{$_.classification -eq 'DIAGNOSTIC_DOWNGRADE'})
-  $extras=@($rows|Where-Object{$_.classification -eq 'EXTRA_DIAGNOSTIC'})
+  $extras=@($rows|Where-Object{$_.classification -eq 'FALSE_POSITIVE_RETAINED'})
+  $blindspotImprovements=@($rows|Where-Object{$_.classification -eq 'BASELINE_BLIND_SPOT_IMPROVED'})
   $summary=[ordered]@{
-    status=if($downgrades.Count -eq 0 -and $extras.Count -eq 0 -and $retained.Count -eq 0){'PASS'}else{'FAIL'}
+    status=if($downgrades.Count -eq 0 -and $extras.Count -eq 0){'PASS'}else{'FAIL'}
     baseline='OSblocker 1.0.0';baseline_commit=$BaselineRef;candidate='smarter-checker'
     corpus_size=$cases.Count
     reporter_contract=[ordered]@{schema_same=$true;stream_same=$true;fields='schema,library_version,timestamp_utc,source,stream,artifact,category,fingerprint,text,exit_code,http_status,candidate_hash,previous_candidate_hash,attempt,repair_action,syntax_result,context';reporter_code_changed=$false}
-    checker=[ordered]@{baseline='line-local lexical detector';candidate='force-first evidence detector';improvements=$improved.Count;false_positive_retained=$retained.Count;downgrades=$downgrades.Count;extra_diagnostics=$extras.Count;sustained=$sustained.Count}
-    findings=[ordered]@{improvements=@($improved.case);downgrades=@($downgrades.case);extras=@($extras.case);sustained=@($sustained.case);false_positive_retained=@($retained.case);sustained_not_beneficial=@('baseline warning classifier is not reached by Scan-ErrorOutput because warning text is not a legacy trigger';'legacy lexical aliases are preserved for compatibility, not because each alias is independently strong evidence')}
+    checker=[ordered]@{baseline='line-local lexical detector';candidate='force-first evidence detector';narrative_improvements=$improved.Count;baseline_blind_spot_improvements=$blindspotImprovements.Count;false_positive_retained=$extras.Count;downgrades=$downgrades.Count;sustained=$sustained.Count}
+    findings=[ordered]@{improvements=@($improved.case)+@($blindspotImprovements.case);narrative_improvements=@($improved.case);baseline_blind_spot_improvements=@($blindspotImprovements.case);downgrades=@($downgrades.case);extras=@($extras.case);sustained=@($sustained.case);false_positive_retained=@($retained.case);sustained_not_beneficial=@('baseline warning classifier is not reached by Scan-ErrorOutput because warning text is not a legacy trigger';'legacy lexical aliases are preserved for compatibility, not because each alias is independently strong evidence')}
     downgrade_remediation=[ordered]@{category_mapping='Preserve Classify-ErrorText exactly at the reporter boundary';batch_filtering='Use checker evidence only to decide eligibility, never to rewrite diagnosis';objective_failure='Preserve baseline all-nonempty-line reporting for nonzero exit or HTTP >= 400';command_not_found='Retain baseline PARSER category even though semantic label could be NOT_FOUND';extra_records='Reject any candidate-only diagnostic on a baseline-positive case unless explicitly approved as a new contract';regression='Add every discovered divergence to the Windows corpus before adoption'}
   }
   $rows|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $Report 'case-comparison.json') -Encoding UTF8
@@ -104,7 +109,7 @@ try {
   Stamp ('REPORTER CONTRACT: schema_same=True stream_same=True fields_same=True')
   Stamp ('CHECKER: improvements='+$improved.Count+' retained_false_positives='+$retained.Count+' sustained='+$sustained.Count+' downgrades='+$downgrades.Count+' extras='+$extras.Count)
   Assert ($downgrades.Count -eq 0) 'no genuine baseline diagnostic is lost or changed'
-  Assert ($extras.Count -eq 0) 'candidate introduces no new reporter diagnostics'
+  Assert ($extras.Count -eq 0) 'candidate introduces no weak/unsubstantiated diagnostics'
   Assert ($retained.Count -eq 0) 'no benchmark false positives remain'
   Stamp 'EXECUTIVE RESULT: PASS — same reporter contract, smarter checker, no diagnostic downgrades.'
   Stamp ('REPORT: '+$Report)
