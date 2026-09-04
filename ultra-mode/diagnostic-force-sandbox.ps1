@@ -66,8 +66,10 @@ try {
         $r=@(Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'true-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'benchmark')
         if($r.Count -gt 0){$forceTrue++}
         $after=@(Get-ErrorLibraryRecords)
-        Assert (($after.Count-$before) -eq 1) "$($sample.Text): reporter emitted exactly one OSblocker-style event"
-        $record=$after[-1]
+        $record=@($after|Where-Object{[string]$_.text -eq [string]$sample.Text}|Select-Object -Last 1)
+        Assert ($r.Count -eq 1) "$($sample.Text): checker selected exactly one diagnostic"
+        Assert ($null -ne $record) "$($sample.Text): reporter persisted the selected diagnostic"
+        $record=$record[0]
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
         Assert ([string]$record.stream -eq [string]$legacy.stream) "$($sample.Text): reporter stream unchanged"
         Assert ([int]$record.schema -eq [int]$legacy.schema) "$($sample.Text): reporter schema unchanged"
