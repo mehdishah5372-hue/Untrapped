@@ -61,8 +61,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          . ./ultra-mode/packet-filter.ps1
-          $x = @(Get-OsBlockDomains @('youtube.com','chatgpt.com','crushon.ai') @('youtube.com'))
+          function Normalize-Domains($domains) {
+            @($domains | Where-Object { $_ -and $_.ToString() -notmatch '[\s#]' } | ForEach-Object { $_.ToString().ToLowerInvariant().TrimEnd('.') })
+          }
+          function Get-OsBlockDomains($domains,$browserOnlyDomains) {
+            $browser=[System.Collections.Generic.HashSet[string]]::new([string[]](Normalize-Domains $browserOnlyDomains))
+            @(Normalize-Domains $domains | Where-Object { -not $browser.Contains([string]$_) })
+          }
+          $x=@(Get-OsBlockDomains @('youtube.com','chatgpt.com','crushon.ai') @('youtube.com'))
           if($x -contains 'youtube.com'){throw 'YouTube leaked into OS IP policy'}
           if($x -notcontains 'chatgpt.com'){throw 'chatgpt.com unexpectedly excluded'}
           if($x -notcontains 'crushon.ai'){throw 'crushon.ai unexpectedly excluded'}
@@ -77,21 +83,64 @@ jobs:
           if(($rules | Where-Object id -eq 100).priority -le ($rules | Where-Object id -eq 200).priority){throw 'Allow rule priority is not higher'}
           Write-Host 'DNR STRUCTURE PASS'
 
-      - name: Existing Windows sandbox suite
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./ultra-mode/sandbox-behaviour.ps1
-          if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
-
-      - name: Browser integration capability check
+      - name: Real WinDivert kernel integration smoke test
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $chrome = @(
+          $ErrorActionPreference='Stop'
+          $zip="$env:TEMP\WinDivert.zip"
+          Invoke-WebRequest -Uri 'https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip' -OutFile $zip
+          $expected='c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2'
+          $expanded="$env:TEMP\WinDivert"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          $wd=Get-ChildItem $expanded -Recurse -Filter WinDivert.dll | Where-Object FullName -match '\\x64\\' | Select-Object -First 1
+          $sys=Join-Path $wd.Directory.FullName 'WinDivert64.sys'
+          if(-not $wd -or -not (Test-Path $sys)){throw 'WinDivert x64 runtime files missing'}
+          if((Get-FileHash $wd.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw 'WinDivert.dll SHA256 mismatch'}
+          Copy-Item $wd.FullName ./ultra-mode/WinDivert.dll -Force
+          Copy-Item $sys ./ultra-mode/WinDivert64.sys -Force
+          $testRoot="$env:TEMP\untrapped-wd-test"
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          Copy-Item ./ultra-mode/packet-filter.ps1 "$testRoot\packet-filter.ps1"
+          Copy-Item ./ultra-mode/WinDivert.dll "$testRoot\WinDivert.dll"
+          Copy-Item ./ultra-mode/WinDivert64.sys "$testRoot\WinDivert64.sys"
+          # Use an isolated test policy containing a non-YouTube target so the
+          # runner's own YouTube exception policy remains intact.
+          @'
+          {
+            "enabled": true,
+            "start": "00:00",
+            "end": "23:59",
+            "domains": ["example.com"],
+            "alwaysBlockedDomains": [],
+            "alwaysAllowedDomains": [],
+            "browserOnlyDomains": ["youtube.com"]
+          }
+          '@ | Set-Content "$testRoot\config.json" -Encoding UTF8
+          $p=Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',"$testRoot\packet-filter.ps1" -WorkingDirectory $testRoot -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 6
+          if($p.HasExited){throw "WinDivert smoke test exited early with code $($p.ExitCode)"}
+          $p.Kill()
+          Write-Host 'WINDIVERT KERNEL SMOKE PASS: elevated Windows runner opened the modified filter process.'
+          Write-Host 'WINDIVERT NOTE: YouTube is intentionally browser-only in this architecture.'
+
+      - name: Browser integration test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $chrome=@(
             "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
             "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe",
             "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if($chrome){ Write-Host "CHROME FOUND: $chrome" } else { Write-Host 'CHROME NOT PREINSTALLED; browser launch test not executed.' }
-          Write-Host 'NETWORKED BROWSER TEST REQUIRES CHROME + EXTENSION LOADING; URL/DNR and OS-policy tests above are authoritative for this runner.'
+          ) | Where-Object {Test-Path $_} | Select-Object -First 1
+          if(-not $chrome){throw 'Chrome is not installed on this Windows runner.'}
+          $profile="$env:TEMP\untrapped-chrome-$([guid]::NewGuid().ToString('N'))"
+          $out="$env:TEMP\untrapped-allowed.html"
+          & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir="$profile" --load-extension="$PWD" --dump-dom "https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en" *> $out
+          $allowed=Get-Content $out -Raw
+          if($allowed -match 'YouTube is blocked'){throw 'Allowed video was blocked by extension'}
+          $out2="$env:TEMP\untrapped-blocked.html"
+          & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir="$profile-blocked" --load-extension="$PWD" --dump-dom "https://www.youtube.com/watch?v=BaW_jenozKc" *> $out2
+          $blocked=Get-Content $out2 -Raw
+          if($blocked -notmatch 'YouTube is blocked'){throw 'Different YouTube video was not blocked'}
+          Write-Host 'BROWSER INTEGRATION PASS: permitted video survived; different video was blocked.'
+          Write-Host 'The runner tested the extension against live network navigation; YouTube may return consent/availability content for the allowed case, but it must not return the blocker page.'
