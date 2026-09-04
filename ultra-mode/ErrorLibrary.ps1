@@ -90,6 +90,7 @@ function Get-CheckerEvidenceScore([string]$Text) {
     if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $score += 70 }
     if ($t -match '(?i)\b(?:redirect rejected|301|302|303|307|308)\b') { $score += 60 }
     if ($t -match '(?i)^\s*\[(?:ERROR|FATAL)\]\s*') { $score += 60 }
+    if ($t -match '(?i)^\s*(?:[A-Za-z0-9_.]+Exception|Exception)\s*[:\-]') { $score += 60 }
     if ($t -match '(?i)^\s*(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
     if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict)\b') { $score += 15 }
     if ($t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression)\b') { $score -= 35 }
