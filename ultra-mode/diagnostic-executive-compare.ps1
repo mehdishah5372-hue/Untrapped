@@ -28,7 +28,36 @@ function Get-BaselineConfidenceScore([string]$Text) {
   return $score
 }
 function Normalize([object]$r){if($null -eq $r){return $null};[ordered]@{schema=[int]$r.schema;library_version=[string]$r.library_version;source=[string]$r.source;stream=[string]$r.stream;artifact=[string]$r.artifact;category=[string]$r.category;fingerprint=[string]$r.fingerprint;text=[string]$r.text;exit_code=[int]$r.exit_code;http_status=[int]$r.http_status;candidate_hash=[string]$r.candidate_hash;previous_candidate_hash=[string]$r.previous_candidate_hash;attempt=[int]$r.attempt;repair_action=[string]$r.repair_action;syntax_result=[string]$r.syntax_result;context=[string]$r.context}}
-function Invoke-Impl([string]$Library,[object]$Case,[string]$Label){$path=Join-Path $env:TEMP ('osb-'+$Label+'-'+[guid]::NewGuid().ToString('N')+'.ps1');Copy-Item -LiteralPath $Library -Destination $path -Force;try{. $path;$ErrorLibraryPath=Join-Path $env:TEMP ('osb-'+$Label+'-events-'+[guid]::NewGuid().ToString('N')+'.jsonl');$out=@(Scan-ErrorOutput -Source 'executive' -Artifact $Case.Name -Lines @($Case.Lines) -ExitCode $Case.Exit -HttpStatus $Case.Http -Stage 'comparison');$records=@(Get-ErrorLibraryRecords);[pscustomobject]@{selected=$out;records=@($records|ForEach-Object{Normalize $_});count=$records.Count}}finally{Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;if($ErrorLibraryPath){Remove-Item -LiteralPath $ErrorLibraryPath -Force -ErrorAction SilentlyContinue}}}
+function Invoke-Impl([string]$Library,[object]$Case,[string]$Label){
+  $runId=[guid]::NewGuid().ToString('N')
+  $libPath=Join-Path $env:TEMP ('osb-'+$Label+'-'+$runId+'.ps1')
+  $casePath=Join-Path $env:TEMP ('osb-'+$Label+'-'+$runId+'.json')
+  $runnerPath=Join-Path $env:TEMP ('osb-'+$Label+'-'+$runId+'-runner.ps1')
+  $eventsPath=Join-Path $env:TEMP ('osb-'+$Label+'-'+$runId+'-events.jsonl')
+  Copy-Item -LiteralPath $Library -Destination $libPath -Force
+  $Case | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $casePath -Encoding UTF8
+  $runner=@'
+param([string]$Library,[string]$CaseFile,[string]$Events)
+. $Library
+$ErrorLibraryPath=$Events
+$case=Get-Content -LiteralPath $CaseFile -Raw | ConvertFrom-Json
+$lines=@($case.Lines)
+$null=Scan-ErrorOutput -Source 'executive' -Artifact ([string]$case.Name) -Lines $lines -ExitCode ([int]$case.Exit) -HttpStatus ([int]$case.Http) -Stage 'comparison'
+'@
+  Set-Content -LiteralPath $runnerPath -Value $runner -Encoding UTF8
+  try{
+    $p=Start-Process -FilePath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$runnerPath,'-Library',$libPath,'-CaseFile',$casePath,'-Events',$eventsPath) -Wait -PassThru -WindowStyle Hidden
+    if($p.ExitCode -ne 0){throw "$Label implementation runner failed with exit code $($p.ExitCode)"}
+    $records=@()
+    if(Test-Path -LiteralPath $eventsPath){
+      $records=@(Get-Content -LiteralPath $eventsPath | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+    }
+    [pscustomobject]@{selected=@();records=@($records);count=$records.Count}
+  } finally {
+    Remove-Item -LiteralPath $libPath,$casePath,$runnerPath,$eventsPath -Force -ErrorAction SilentlyContinue
+  }
+}
+try{. $path;$ErrorLibraryPath=Join-Path $env:TEMP ('osb-'+$Label+'-events-'+[guid]::NewGuid().ToString('N')+'.jsonl');$out=@(Scan-ErrorOutput -Source 'executive' -Artifact $Case.Name -Lines @($Case.Lines) -ExitCode $Case.Exit -HttpStatus $Case.Http -Stage 'comparison');$records=@(Get-ErrorLibraryRecords);[pscustomobject]@{selected=$out;records=@($records|ForEach-Object{Normalize $_});count=$records.Count}}finally{Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;if($ErrorLibraryPath){Remove-Item -LiteralPath $ErrorLibraryPath -Force -ErrorAction SilentlyContinue}}}
 try{
  Stamp 'OSblocker EXECUTIVE DIAGNOSTIC — REPORTER + CHECKER COMPARISON'
  Stamp 'Baseline: OSblocker 1.0.0 ErrorLibrary from pinned baseline commit.'
