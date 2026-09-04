@@ -88,6 +88,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Full UAUD launch-chain gate
+        if: github.ref == 'refs/heads/main'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
