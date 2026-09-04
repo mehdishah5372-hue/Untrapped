@@ -85,11 +85,13 @@ function Get-CheckerEvidenceScore([string]$Text) {
     if ($t -match '(?i)The term .+ is not recognized as the name of (?:a )?(?:cmdlet|function|script file|operable program)') { $strong = [Math]::Max($strong,80) }
     if ($t -match '(?i)(?:Access is denied|access denied|permission denied|unauthorized)') { $strong = [Math]::Max($strong,80) }
     if ($t -match '(?i)(?:cannot find the path|path .{0,60} does not exist|ItemNotFoundException)') { $strong = [Math]::Max($strong,80) }
+    if ($t -match '(?i)^\s*\[(?:ERROR|FATAL)\]') { $strong = [Math]::Max($strong,80) }
     if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $strong = [Math]::Max($strong,70) }
     if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $strong = [Math]::Max($strong,70) }
-    if ($t -match '(?i)\b(?:redirect rejected)\b') { $strong = [Math]::Max($strong,60) }
+    if ($t -match '(?i)redirect\s+rejected') { $strong = [Math]::Max($strong,70) }
     if ($t -match '(?i)\bHTTP\s+[45]\d\d\b') { $strong = [Math]::Max($strong,70) }
     $narrative = $t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression|diagnostic|narrative|example|intentionally|expected|verifies|reproduced|coverage|historical)\b'
+    if ($narrative -and $t -match '(?i)\bHTTP\s+[45]\d\d\b') { return 0 }
     if ($narrative -and $strong -lt 70) { return 0 }
     if ($strong -ge 70) { return $strong }
     if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict|redirect rejected)\b') { return 15 }
