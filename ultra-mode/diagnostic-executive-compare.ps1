@@ -57,7 +57,6 @@ $null=Scan-ErrorOutput -Source 'executive' -Artifact ([string]$case.Name) -Lines
     Remove-Item -LiteralPath $libPath,$casePath,$runnerPath,$eventsPath -Force -ErrorAction SilentlyContinue
   }
 }
-try{. $path;$ErrorLibraryPath=Join-Path $env:TEMP ('osb-'+$Label+'-events-'+[guid]::NewGuid().ToString('N')+'.jsonl');$out=@(Scan-ErrorOutput -Source 'executive' -Artifact $Case.Name -Lines @($Case.Lines) -ExitCode $Case.Exit -HttpStatus $Case.Http -Stage 'comparison');$records=@(Get-ErrorLibraryRecords);[pscustomobject]@{selected=$out;records=@($records|ForEach-Object{Normalize $_});count=$records.Count}}finally{Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;if($ErrorLibraryPath){Remove-Item -LiteralPath $ErrorLibraryPath -Force -ErrorAction SilentlyContinue}}}
 try{
  Stamp 'OSblocker EXECUTIVE DIAGNOSTIC — REPORTER + CHECKER COMPARISON'
  Stamp 'Baseline: OSblocker 1.0.0 ErrorLibrary from pinned baseline commit.'
