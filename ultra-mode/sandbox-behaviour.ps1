@@ -18,7 +18,7 @@ try{
   if(-not(Test-Path -LiteralPath $ScriptPath)){throw "Behavioural candidate not found: $ScriptPath"};if(-not(Test-Path -LiteralPath $ConfigPath)){throw "Behavioural config not found: $ConfigPath"}
   $tokens=$null;$errors=$null;$ast=[System.Management.Automation.Language.Parser]::ParseFile($ScriptPath,[ref]$tokens,[ref]$errors)
   if(@($errors).Count){throw ('packet-filter.ps1 syntax failed: '+(($errors|ForEach-Object{$_.Message}) -join ' | '))}
-  $functions=@($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true));$wanted=@('Get-Config','Normalize-Domains','Test-Config','Test-UltraActive','New-WinDivertFilter')
+  $functions=@($ast.FindAll({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true));$wanted=@('Get-Config','Normalize-Domains','Test-Config','Test-UltraActive','Get-OsBlockDomains','New-WinDivertFilter')
   foreach($name in $wanted){if(-not(@($functions|Where-Object{$_.Name -eq $name}).Count)){throw "Required policy function missing: $name"}}
   $functionText=($functions|Where-Object{$wanted -contains $_.Name}|ForEach-Object{$_.Extent.Text}) -join "`n`n"
   $ht=$null;$he=$null;$helperAst=[System.Management.Automation.Language.Parser]::ParseInput($functionText,[ref]$ht,[ref]$he);if(@($he).Count){throw 'Extracted policy syntax failed'}
@@ -26,6 +26,8 @@ try{
   $hits=@($helperAst.FindAll({param($n)if($n -is [System.Management.Automation.Language.CommandAst]){$forbidden -contains $n.GetCommandName()}},$true));if($hits.Count){throw ('Unsafe command present in executable sandbox AST: '+(($hits|ForEach-Object{$_.GetCommandName()}) -join ', '))}
   . ([scriptblock]::Create($functionText))
   $config=Get-Content -LiteralPath $ConfigPath -Raw|ConvertFrom-Json;Test-Config $config
+  $osDomains=@(Get-OsBlockDomains @('youtube.com','chatgpt.com') @('youtube.com')); if($osDomains.Count -ne 1 -or $osDomains[0] -ne 'chatgpt.com'){throw 'browser-only domain exclusion failed'}
+  Write-Host 'STAGE 6 PASS: browser-only domains are excluded from OS IP blocking policy.'
   if(Test-UltraActive $config ([TimeSpan]::Parse('04:59'))){throw 'Schedule boundary bug: 04:59 unexpectedly active'}
   if(-not(Test-UltraActive $config ([TimeSpan]::Parse('05:00')))){throw 'Schedule boundary bug: 05:00 should be active'}
   if(-not(Test-UltraActive $config ([TimeSpan]::Parse('21:59')))){throw 'Schedule boundary bug: 21:59 should be active'}
