@@ -12,12 +12,15 @@
     "ytimg.com",
     "chatgpt.com"
   ],
-  "alwaysBlockedDomains": [
-    "crushon.ai"
-  ],
-  "alwaysAllowedDomains": [
-    "windowsmcp.io",
-    "pypi.org",
-    "files.pythonhosted.org"
+  "alwaysBlockedDomains": ["crushon.ai"],
+  "alwaysAllowedDomains": ["windowsmcp.io", "pypi.org", "files.pythonhosted.org"],
+  "browserOnlyDomains": [
+    "youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "youtubei.googleapis.com",
+    "youtube.googleapis.com",
+    "googlevideo.com",
+    "ytimg.com"
   ]
 }
