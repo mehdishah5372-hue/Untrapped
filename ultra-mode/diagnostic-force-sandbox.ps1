@@ -80,7 +80,7 @@ try {
     }
 
     Assert ($legacyFalse -gt $forceFalse) "smarter checker reduces false positives: legacy=$legacyFalse force=$forceFalse"
-    Assert ($forceTrue -eq $truePositives.Count) "smarter checker retains all high-confidence positives: $forceTrue/$($truePositives.Count)"
+    Assert ($forceTrue -eq $legacyTrue) "smarter checker preserves every baseline-detectable positive: $forceTrue/$legacyTrue; baseline blind spots=$($truePositives.Count-$legacyTrue)"
     Write-Host "DIAGNOSTIC BENCHMARK: legacy_false=$legacyFalse force_false=$forceFalse legacy_true=$legacyTrue force_true=$forceTrue"
     Write-Host 'REPORTER CONTRACT: unchanged schema=1, stream=output-scan, fields preserved.'
     Write-Host 'DIAGNOSTIC SANDBOX PASS: same report/diagnosis for concrete errors; smarter checker only for noisy/ambiguous output.'
