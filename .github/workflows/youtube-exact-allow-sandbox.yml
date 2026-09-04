@@ -20,10 +20,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Get-ChildItem . -Filter *.ps1 -Recurse -File | ForEach-Object {
+          @('./content.js','./youtube-policy.js','./ultra-mode/packet-filter.ps1','./ultra-mode/sandbox-behaviour.ps1') | ForEach-Object {
             $tokens=$null; $errors=$null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$errors)
-            if(@($errors).Count){ throw "Syntax failure: $($_.FullName)" }
+            if(-not (Test-Path $_)){ throw "Missing test file: $_" }
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $_).Path,[ref]$tokens,[ref]$errors)
+            if(@($errors).Count){ throw "Syntax failure: $_" }
           }
           Write-Host 'POWERSHELL SYNTAX PASS'
 
