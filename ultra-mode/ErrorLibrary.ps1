@@ -127,8 +127,8 @@ function Force-DiagnosticScan {
         # Force-first: inspect the entire batch before selecting anything. Strong,
         # structured diagnostics win; narrative references to errors do not.
         $ranked=@($nonEmpty|ForEach-Object{
-            [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_)}
-        }|Where-Object{$_.Score -ge 50}|Sort-Object Score -Descending)
+            [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_);Concrete=(Test-ConcreteDiagnosticEvidence $_)}
+        }|Where-Object{$_.Concrete}|Sort-Object Score -Descending)
         $selected=@($ranked|ForEach-Object{$_.Text})
     }
 
