@@ -10,6 +10,23 @@ New-Item -ItemType Directory -Force -Path $Report | Out-Null
 function Stamp([string]$s){Write-Host ('['+(Get-Date -Format HH:mm:ss)+'] '+$s)}
 function Assert([bool]$ok,[string]$msg){if(-not $ok){throw "EXECUTIVE DIAGNOSTIC FAIL: $msg"};Stamp ('PASS — '+$msg)}
 function Parse([string]$p){$t=$null;$e=$null;$a=[System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$t,[ref]$e);[pscustomobject]@{ast=$a;errors=@($e)}}
+function Get-BaselineConfidenceScore([string]$Text) {
+  $t = if ($null -eq $Text) { '' } else { [string]$Text }
+  $score = 0
+  if ($t -match '(?i)ParserError|PSSecurityException|CommandNotFoundException|UnauthorizedAccessException|FullyQualifiedErrorId\s*:|CategoryInfo\s*:') { $score += 100 }
+  if ($t -match '(?i)At\s+(?:C:\\|[A-Z]:\\).+\.ps1:\d+\s+char:\d+') { $score += 90 }
+  if ($t -match '(?i)\b(?:Missing|Unexpected|Incomplete)\b.{0,80}\b(?:token|closing|parenthesis|brace|bracket|string)') { $score += 80 }
+  if ($t -match '(?i)The term .+ is not recognized as the name of (?:a )?(?:cmdlet|function|script file|operable program)') { $score += 80 }
+  if ($t -match '(?i)Access is denied|access denied|permission denied|unauthorized') { $score += 80 }
+  if ($t -match '(?i)HTTP\s+(?:4|5)\d\d|\b(?:409|422)\b.{0,30}\b(?:Conflict|Unprocessable)') { $score += 70 }
+  if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $score += 70 }
+  if ($t -match '(?i)\b(?:redirect rejected|301|302|303|307|308)\b') { $score += 60 }
+  if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
+  if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict)\b') { $score += 15 }
+  if ($t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression)\b') { $score -= 35 }
+  if ($t -match '(?i)\b(?:intentionally|expected test|verifies that|example|narrative|fixture)\b') { $score -= 25 }
+  return $score
+}
 function Normalize([object]$r){if($null -eq $r){return $null};[ordered]@{schema=[int]$r.schema;library_version=[string]$r.library_version;source=[string]$r.source;stream=[string]$r.stream;artifact=[string]$r.artifact;category=[string]$r.category;fingerprint=[string]$r.fingerprint;text=[string]$r.text;exit_code=[int]$r.exit_code;http_status=[int]$r.http_status;candidate_hash=[string]$r.candidate_hash;previous_candidate_hash=[string]$r.previous_candidate_hash;attempt=[int]$r.attempt;repair_action=[string]$r.repair_action;syntax_result=[string]$r.syntax_result;context=[string]$r.context}}
 function Invoke-Impl([string]$Library,[object]$Case,[string]$Label){$path=Join-Path $env:TEMP ('osb-'+$Label+'-'+[guid]::NewGuid().ToString('N')+'.ps1');Copy-Item -LiteralPath $Library -Destination $path -Force;try{. $path;$ErrorLibraryPath=Join-Path $env:TEMP ('osb-'+$Label+'-events-'+[guid]::NewGuid().ToString('N')+'.jsonl');$out=@(Scan-ErrorOutput -Source 'executive' -Artifact $Case.Name -Lines @($Case.Lines) -ExitCode $Case.Exit -HttpStatus $Case.Http -Stage 'comparison');$records=@(Get-ErrorLibraryRecords);[pscustomobject]@{selected=$out;records=@($records|ForEach-Object{Normalize $_});count=$records.Count}}finally{Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;if($ErrorLibraryPath){Remove-Item -LiteralPath $ErrorLibraryPath -Force -ErrorAction SilentlyContinue}}}
 try{
@@ -41,7 +58,7 @@ try{
  $rows=@();$baselineFalse=0;$upgradeFalse=0;$baselineTrueCases=0;$upgradeTrueCases=0;$trueCaseMismatches=0;$reporterDivergences=0;$checkerDivergences=0
  foreach($case in $cases){
    $b=Invoke-Impl $base $case 'baseline';$u=Invoke-Impl $Current $case 'upgrade';$bn=@($b.records);$un=@($u.records)
-   $highBaseline=@($bn|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+   $highBaseline=@($bn|Where-Object{(Get-BaselineConfidenceScore $_.text) -ge 50})
    $matchedHigh=0;$unmatchedHigh=@()
    foreach($br in $highBaseline){
      $hit=$false
