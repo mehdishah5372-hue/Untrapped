@@ -1,0 +1,97 @@
+name: YouTube exact-allow Windows integration sandbox
+
+on:
+  push:
+    branches: [youtube-exact-allow-sandbox]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-integration:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Checkout sandbox branch
+        uses: actions/checkout@v4
+
+      - name: PowerShell syntax gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem . -Filter *.ps1 -Recurse -File | ForEach-Object {
+            $tokens=$null; $errors=$null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$errors)
+            if(@($errors).Count){ throw "Syntax failure: $($_.FullName)" }
+          }
+          Write-Host 'POWERSHELL SYNTAX PASS'
+
+      - name: Exact URL policy corpus
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Get-Content ./youtube-policy.js -Raw
+          $ctx = [Microsoft.ClearScript.ScriptEngine]$null
+          # Validate the policy with a small PowerShell model equivalent; the
+          # authoritative browser rule is tested below by parsing its regex.
+          $rules = Get-Content ./youtube-rules.json -Raw | ConvertFrom-Json
+          $allow = $rules | Where-Object id -eq 100
+          $rx = [regex]$allow.condition.regexFilter
+          $allowed = @(
+            'https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en',
+            'https://www.youtube.com/watch?vl=en&v=2wgg7KtzTrU&utm_source=x',
+            'https://youtube.com/watch?utm_campaign=x&v=2wgg7KtzTrU&t=90'
+          )
+          $blocked = @(
+            'https://www.youtube.com/watch?v=OTHER_VIDEO',
+            'https://www.youtube.com/watch?v=2wgg7KtzTrU&v=OTHER_VIDEO',
+            'https://www.youtube.com/watch?v=2wgg7KtzTrU&v=2wgg7KtzTrU',
+            'https://www.youtube.com/shorts/2wgg7KtzTrU',
+            'https://www.youtube.com/results?search_query=2wgg7KtzTrU',
+            'https://www.youtube.com/channel/UC123',
+            'https://www.youtube.com/@channel',
+            'https://youtu.be/2wgg7KtzTrU'
+          )
+          foreach($u in $allowed){if(-not $rx.IsMatch($u)){throw "ALLOW REGRESSION: $u"}}
+          foreach($u in $blocked){if($rx.IsMatch($u)){throw "BLOCK REGRESSION: $u"}}
+          Write-Host 'EXACT URL REGRESSION PASS'
+
+      - name: Browser-only OS exclusion test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./ultra-mode/packet-filter.ps1
+          $x = @(Get-OsBlockDomains @('youtube.com','chatgpt.com','crushon.ai') @('youtube.com'))
+          if($x -contains 'youtube.com'){throw 'YouTube leaked into OS IP policy'}
+          if($x -notcontains 'chatgpt.com'){throw 'chatgpt.com unexpectedly excluded'}
+          if($x -notcontains 'crushon.ai'){throw 'crushon.ai unexpectedly excluded'}
+          Write-Host 'OS POLICY EXCLUSION PASS'
+
+      - name: DNR JSON structural validation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rules = Get-Content ./youtube-rules.json -Raw | ConvertFrom-Json
+          if(@($rules).Count -ne 3){throw 'Unexpected rule count'}
+          if(($rules | Where-Object id -eq 100).priority -le ($rules | Where-Object id -eq 200).priority){throw 'Allow rule priority is not higher'}
+          Write-Host 'DNR STRUCTURE PASS'
+
+      - name: Existing Windows sandbox suite
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./ultra-mode/sandbox-behaviour.ps1
+          if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
+
+      - name: Browser integration capability check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $chrome = @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if($chrome){ Write-Host "CHROME FOUND: $chrome" } else { Write-Host 'CHROME NOT PREINSTALLED; browser launch test not executed.' }
+          Write-Host 'NETWORKED BROWSER TEST REQUIRES CHROME + EXTENSION LOADING; URL/DNR and OS-policy tests above are authoritative for this runner.'
