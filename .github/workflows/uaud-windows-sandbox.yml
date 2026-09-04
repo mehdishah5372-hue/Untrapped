@@ -2,9 +2,9 @@ name: UAUD Windows sandbox
 
 on:
   push:
-    branches: [main]
+    branches: [main, youtube-exact-allow-sandbox]
   pull_request:
-    branches: [main]
+    branches: [main, youtube-exact-allow-sandbox]
 
 permissions:
   contents: read
