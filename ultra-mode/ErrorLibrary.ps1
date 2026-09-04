@@ -67,8 +67,36 @@ function Get-ErrorCount([string]$Fingerprint) {
     } catch { return 0 }
 }
 
-# Smarter checker only. Reporting remains the OSblocker 1.0.0 per-line reporter:
-# schema 1, output-scan, same fields, same context, same dedupe semantics.
+# Smarter checker only. The reporter below remains the OSblocker 1.0.0 contract.
+# The checker deliberately separates evidence collection from diagnosis so narrative text
+# cannot masquerade as an error, while objective process/HTTP failure evidence preserves
+# the legacy per-line reporting contract.
+$ErrorLibraryCheckerVersion = '2.0.0'
+$ErrorLibraryGlobalAttemptCeiling = 256
+$ErrorLibraryRepeatedFingerprintCeiling = 20
+
+function Get-CheckerEvidenceScore([string]$Text) {
+    $t = if ($null -eq $Text) { '' } else { [string]$Text }
+    $score = 0
+    if ($t -match '(?i)ParserError|PSSecurityException|CommandNotFoundException|UnauthorizedAccessException|FullyQualifiedErrorId\s*:|CategoryInfo\s*:') { $score += 100 }
+    if ($t -match '(?i)At\s+(?:C:\\|[A-Z]:\\).+\.ps1:\d+\s+char:\d+') { $score += 90 }
+    if ($t -match '(?i)\b(?:Missing|Unexpected|Incomplete)\b.{0,80}\b(?:token|closing|parenthesis|brace|bracket|string)') { $score += 80 }
+    if ($t -match '(?i)The term .+ is not recognized as the name of (?:a )?(?:cmdlet|function|script file|operable program)') { $score += 80 }
+    if ($t -match '(?i)Access is denied|access denied|permission denied|unauthorized') { $score += 80 }
+    if ($t -match '(?i)HTTP\s+(?:4|5)\d\d|\b(?:409|422)\b.{0,30}\b(?:Conflict|Unprocessable)') { $score += 70 }
+    if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $score += 70 }
+    if ($t -match '(?i)\b(?:redirect rejected|301|302|303|307|308)\b') { $score += 60 }
+    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
+    if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict)\b') { $score += 15 }
+    if ($t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression)\b') { $score -= 35 }
+    if ($t -match '(?i)\b(?:intentionally|expected test|verifies that|example|narrative|fixture)\b') { $score -= 25 }
+    return $score
+}
+
+function Test-ConcreteDiagnosticEvidence([string]$Text) {
+    return ((Get-CheckerEvidenceScore $Text) -ge 50)
+}
+
 function Force-DiagnosticScan {
     param(
         [string]$Source='UNKNOWN', [string]$Artifact='', [string[]]$Lines,
@@ -79,15 +107,18 @@ function Force-DiagnosticScan {
     $seen=@{}
     $selected=@()
 
-    # Preserve baseline reporter semantics whenever objective process/HTTP evidence exists:
-    # baseline Test-ErrorLike returned true for every non-empty line in these conditions.
+    # Objective failure evidence is authoritative. This intentionally preserves the
+    # baseline's reporter behaviour: when the process/HTTP request failed, every
+    # non-empty captured line remains reportable rather than silently disappearing.
     if($ExitCode -ne 0 -or $HttpStatus -ge 400){
         $selected=$nonEmpty
     } else {
-        # Otherwise, inspect the complete batch first and select only concrete error evidence.
-        foreach($text in $nonEmpty){
-            if(Test-ErrorLike $text 0 0){$selected += $text}
-        }
+        # Force-first: inspect the entire batch before selecting anything. Strong,
+        # structured diagnostics win; narrative references to errors do not.
+        $ranked=@($nonEmpty|ForEach-Object{
+            [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_)}
+        }|Where-Object{$_.Score -ge 50}|Sort-Object Score -Descending)
+        $selected=@($ranked|ForEach-Object{$_.Text})
     }
 
     foreach($text in $selected){
@@ -102,8 +133,7 @@ function Force-DiagnosticScan {
 
 function Test-ErrorLike([string]$Text, [int]$ExitCode = 0, [int]$HttpStatus = 0) {
     if ($ExitCode -ne 0 -or $HttpStatus -ge 400) { return $true }
-    $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    return [bool]($t -match '(?i)(ParserError|At line\s+\d+\s+char\s+\d+|At C:\\.*\.ps1:\d+ char:\d+|CommandNotFoundException|UnauthorizedAccessException|Exception calling|FullyQualifiedErrorId\s*:|CategoryInfo\s*:|^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]|redirect rejected|Access is denied|The term .* is not recognized)')
+    return (Test-ConcreteDiagnosticEvidence $Text)
 }
 
 function Scan-ErrorOutput {
