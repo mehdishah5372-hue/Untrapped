@@ -8,11 +8,15 @@
     "Test-Config",
     "Test-UltraActive",
     "Test-OverrideActive",
+    "Get-OsBlockDomains",
     "Get-DomainIPs",
     "New-WinDivertFilter"
   ],
   "required_policy": {
-    "scheduled_window": { "start": "05:00", "end": "22:00" },
+    "scheduled_window": {
+      "start": "05:00",
+      "end": "22:00"
+    },
     "scheduled_domains_source": "config.json:domains",
     "always_blocked_source": "config.json:alwaysBlockedDomains",
     "always_allowed_source": "config.json:alwaysAllowedDomains",
@@ -22,7 +26,9 @@
     "loopback_excluded": true,
     "drop_flag": true,
     "override_source": "override-until.txt",
-    "override_is_only_policy_bypass": true
+    "override_is_only_policy_bypass": true,
+    "browser_only_domains_source": "config.json:browserOnlyDomains",
+    "youtube_url_policy": "browser extension declarativeNetRequest + SPA navigation guard"
   },
   "forbidden_mutations": [
     "Windows Firewall",
