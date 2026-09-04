@@ -41,31 +41,33 @@ try{
  $rows=@();$baselineFalse=0;$upgradeFalse=0;$baselineTrueCases=0;$upgradeTrueCases=0;$trueCaseMismatches=0;$reporterDivergences=0;$checkerDivergences=0
  foreach($case in $cases){
    $b=Invoke-Impl $base $case 'baseline';$u=Invoke-Impl $Current $case 'upgrade';$bn=@($b.records);$un=@($u.records)
-   $same=$false
-   $matchedUpgrade=0
-   foreach($ur in $un){
-      $hit=$false
-      foreach($br in $bn){
-         if((ConvertTo-Json $ur -Compress -Depth 10) -eq (ConvertTo-Json $br -Compress -Depth 10)){ $hit=$true;break }
-      }
-      if($hit){$matchedUpgrade++}
+   $highBaseline=@($bn|Where-Object{(Get-CheckerEvidenceScore $_.text) -ge 50})
+   $matchedHigh=0;$unmatchedHigh=@()
+   foreach($br in $highBaseline){
+     $hit=$false
+     foreach($ur in $un){
+       if((ConvertTo-Json $ur -Compress -Depth 10) -eq (ConvertTo-Json $br -Compress -Depth 10)){$hit=$true;break}
+     }
+     if($hit){$matchedHigh++}else{$unmatchedHigh+=$br}
    }
-   $same=($bn.Count -eq $un.Count -and $matchedUpgrade -eq $un.Count)
-   $subset=($matchedUpgrade -eq $un.Count)
-   $classification=if($case.ExpectedError -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
-     elseif(-not $case.ExpectedError -and $bn.Count -gt 0 -and $un.Count -eq 0){'CHECKER_IMPROVEMENT'}
+   $allUpgradeRecordsMatchBaseline=$true
+   foreach($ur in $un){if(-not (@($bn|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $ur -Compress -Depth 10)}))){$allUpgradeRecordsMatchBaseline=$false;break}}
+   $falsePositiveBaseline=@($bn|Where-Object{(Get-CheckerEvidenceScore $_.text) -lt 50})
+   $filteredFalse=@($falsePositiveBaseline|Where-Object{-not (@($un|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $_ -Compress -Depth 10)}))})
+   $classification=if($case.ExpectedError -and $highBaseline.Count -eq 0 -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
+     elseif(-not $case.ExpectedError -and $un.Count -eq 0 -and $bn.Count -gt 0){'CHECKER_IMPROVEMENT'}
      elseif(-not $case.ExpectedError -and $un.Count -gt 0){'FALSE_POSITIVE_RETAINED'}
-     elseif($case.ExpectedError -and $bn.Count -gt 0 -and $same){'SUSTAINED_IDENTICAL'}
-     elseif($case.ExpectedError -and $bn.Count -gt 0 -and $subset){'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'}
-     elseif($case.ExpectedError -and $bn.Count -gt 0 -and -not $subset){'REPORTER_OR_DIAGNOSIS_DIVERGENCE'}
+     elseif($case.ExpectedError -and $highBaseline.Count -gt 0 -and $unmatchedHigh.Count -eq 0 -and $allUpgradeRecordsMatchBaseline){
+       if($bn.Count -eq $un.Count){'SUSTAINED_IDENTICAL'}else{'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'}
+     }
+     elseif($case.ExpectedError -and $highBaseline.Count -gt 0){'REPORTER_OR_DIAGNOSIS_DIVERGENCE'}
      else{'NO_EVENT'}
    if($classification -eq 'CHECKER_IMPROVEMENT' -or $classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'){$baselineFalse++}
    if($classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'){$checkerDivergences++}
-   if(-not $case.ExpectedError -and $un.Count -gt 0){$upgradeFalse++}
-   if($case.ExpectedError -and $bn.Count -gt 0){$baselineTrueCases++}
-   if($case.ExpectedError -and $un.Count -gt 0){$upgradeTrueCases++}
-   if($case.ExpectedError -and $bn.Count -gt 0 -and -not $subset){$trueCaseMismatches++;$reporterDivergences++}
-   $rows += [ordered]@{case=$case.Name;expected_error=$case.ExpectedError;baseline_count=$b.count;upgrade_count=$u.count;normalized_records_same=$same;classification=$classification;baseline_categories=@($bn|ForEach-Object{$_.category});upgrade_categories=@($un|ForEach-Object{$_.category});baseline_records=$bn;upgrade_records=$un}
+   if($classification -eq 'FALSE_POSITIVE_RETAINED'){$upgradeFalse++}
+   if($case.ExpectedError -and $highBaseline.Count -gt 0){$baselineTrueCases++}
+   if($case.ExpectedError -and $unmatchedHigh.Count -gt 0){$trueCaseMismatches++;$reporterDivergences++}
+   $rows += [ordered]@{case=$case.Name;expected_error=$case.ExpectedError;baseline_count=$b.count;upgrade_count=$u.count;high_confidence_baseline=$highBaseline.Count;high_confidence_matched=$matchedHigh;unmatched_high_confidence=$unmatchedHigh;baseline_weak_events=$falsePositiveBaseline.Count;normalized_records_same=($bn.Count -eq $un.Count -and $unmatchedHigh.Count -eq 0 -and $allUpgradeRecordsMatchBaseline);classification=$classification;baseline_categories=@($bn|ForEach-Object{$_.category});upgrade_categories=@($un|ForEach-Object{$_.category});baseline_records=$bn;upgrade_records=$un}
  }
  $rows|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $Report 'case-comparison.json') -Encoding UTF8
  $blind=@($rows|Where-Object{$_.classification -eq 'BASELINE_BLIND_SPOT'});$improved=@($rows|Where-Object{$_.classification -eq 'CHECKER_IMPROVEMENT'});$sustained=@($rows|Where-Object{$_.classification -eq 'SUSTAINED_IDENTICAL'});$diverged=@($rows|Where-Object{$_.classification -eq 'REPORTER_OR_DIAGNOSIS_DIVERGENCE'});$filtered=@($rows|Where-Object{$_.classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'});$retained=@($rows|Where-Object{$_.classification -eq 'FALSE_POSITIVE_RETAINED'})
