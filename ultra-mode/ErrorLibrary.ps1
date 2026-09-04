@@ -77,22 +77,24 @@ $ErrorLibraryRepeatedFingerprintCeiling = 20
 
 function Get-CheckerEvidenceScore([string]$Text) {
     $t = if ($null -eq $Text) { '' } else { [string]$Text }
-    $score = 0
-    if ($t -match '(?i)ParserError|PSSecurityException|CommandNotFoundException|UnauthorizedAccessException|FullyQualifiedErrorId\s*:|CategoryInfo\s*:') { $score += 100 }
-    if ($t -match '(?i)At\s+(?:C:\\|[A-Z]:\\).+\.ps1:\d+\s+char:\d+') { $score += 90 }
-    if ($t -match '(?i)\b(?:Missing|Unexpected|Incomplete)\b.{0,80}\b(?:token|closing|parenthesis|brace|bracket|string)') { $score += 80 }
-    if ($t -match '(?i)The term .+ is not recognized as the name of (?:a )?(?:cmdlet|function|script file|operable program)') { $score += 80 }
-    if ($t -match '(?i)Access is denied|access denied|permission denied|unauthorized') { $score += 80 }
-    if ($t -match '(?i)HTTP\s+(?:4|5)\d\d|\b(?:409|422)\b.{0,30}\b(?:Conflict|Unprocessable)') { $score += 70 }
-    if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $score += 70 }
-    if ($t -match '(?i)\b(?:redirect rejected|301|302|303|307|308)\b') { $score += 60 }
-    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $score += 60 }
-    if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict)\b') { $score += 15 }
-    if ($t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression)\b') { $score -= 35 }
-    if ($t -match '(?i)\b(?:intentionally|expected test|verifies that|example|narrative|fixture)\b') { $score -= 25 }
-    return $score
+    if ([string]::IsNullOrWhiteSpace($t)) { return 0 }
+    $strong = 0
+    if ($t -match '(?i)ParserError|PSSecurityException|CommandNotFoundException|UnauthorizedAccessException|FullyQualifiedErrorId\s*:|CategoryInfo\s*:') { $strong = [Math]::Max($strong,100) }
+    if ($t -match '(?i)At\s+(?:[A-Z]:\\|\\\\).+\.ps1:\d+\s+char:\d+') { $strong = [Math]::Max($strong,90) }
+    if ($t -match '(?i)\b(?:Missing|Unexpected|Incomplete)\b.{0,100}\b(?:token|closing|parenthesis|brace|bracket|string)') { $strong = [Math]::Max($strong,80) }
+    if ($t -match '(?i)The term .+ is not recognized as the name of (?:a )?(?:cmdlet|function|script file|operable program)') { $strong = [Math]::Max($strong,80) }
+    if ($t -match '(?i)(?:Access is denied|access denied|permission denied|unauthorized)') { $strong = [Math]::Max($strong,80) }
+    if ($t -match '(?i)(?:cannot find the path|path .{0,60} does not exist|ItemNotFoundException)') { $strong = [Math]::Max($strong,80) }
+    if ($t -match '(?i)^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|FATAL)\s*[:\-]') { $strong = [Math]::Max($strong,70) }
+    if ($t -match '(?i)\b(?:timed out|timeout occurred|request timed out)\b') { $strong = [Math]::Max($strong,70) }
+    if ($t -match '(?i)\b(?:redirect rejected)\b') { $strong = [Math]::Max($strong,60) }
+    if ($t -match '(?i)\bHTTP\s+[45]\d\d\b') { $strong = [Math]::Max($strong,70) }
+    $narrative = $t -match '(?i)\b(?:pass|passed|success|successful|complete|completed|test|fixture|regression|diagnostic|narrative|example|intentionally|expected|verifies|reproduced|coverage|historical)\b'
+    if ($narrative -and $strong -lt 70) { return 0 }
+    if ($strong -ge 70) { return $strong }
+    if ($t -match '(?i)\b(?:error|exception|failed|failure|denied|cannot find|not found|unprocessable|conflict|redirect rejected)\b') { return 15 }
+    return 0
 }
-
 function Test-ConcreteDiagnosticEvidence([string]$Text) {
     return ((Get-CheckerEvidenceScore $Text) -ge 50)
 }
