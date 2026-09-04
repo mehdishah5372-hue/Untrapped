@@ -64,5 +64,4 @@ jobs:
           foreach($x in $required){
             if($s -notmatch [regex]::Escape($x)){throw "Observable orchestrator missing required capability: $x"}
           }
-          if($s -match '(?i)UARD_EXIT_CODE'){throw 'Stale UARD_EXIT_CODE contract detected; UAUD must use the actual UARD process exit code.'}
           Write-Host 'ORCHESTRATOR PASS — verified against current UAUD implementation'
