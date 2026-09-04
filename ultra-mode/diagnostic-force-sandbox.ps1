@@ -102,11 +102,12 @@ try {
     )
     foreach($sample in $legacyPositiveCorpus){
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
-        $before=@(Get-ErrorLibraryRecords).Count
-        $null=Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'legacy-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'equivalence'
-        $after=@(Get-ErrorLibraryRecords)
-        Assert (($after.Count-$before) -eq 1) "$($sample.Text): baseline-positive event cardinality preserved"
-        $record=$after[-1]
+        $r=@(Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'legacy-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'equivalence')
+        Assert ($r.Count -eq 1) "$($sample.Text): baseline-positive event cardinality preserved"
+        $fp=[string]$r[0].fingerprint
+        $records=@(Get-ErrorLibraryRecords | Where-Object { [string]$_.fingerprint -eq $fp })
+        Assert ($records.Count -eq 1) "$($sample.Text): baseline-positive event persisted"
+        $record=$records[0]
         foreach($field in @('schema','library_version','stream','category','fingerprint','text','exit_code','http_status','candidate_hash','previous_candidate_hash','attempt','repair_action','syntax_result')){
             Assert ([string]$record.$field -eq [string]$legacy.$field) "$($sample.Text): $field matches baseline contract"
         }
