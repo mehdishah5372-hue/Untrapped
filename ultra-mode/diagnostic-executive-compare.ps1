@@ -69,7 +69,7 @@ try{
    }
    $allUpgradeRecordsMatchBaseline=$true
    foreach($ur in $un){if(-not (@($bn|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $ur -Compress -Depth 10)}))){$allUpgradeRecordsMatchBaseline=$false;break}}
-   $falsePositiveBaseline=@($bn|Where-Object{(Get-CheckerEvidenceScore $_.text) -lt 50})
+   $falsePositiveBaseline=@($bn|Where-Object{(Get-BaselineConfidenceScore $_.text) -lt 50})
    $filteredFalse=@($falsePositiveBaseline|Where-Object{-not (@($un|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $_ -Compress -Depth 10)}))})
    $classification=if($case.ExpectedError -and $highBaseline.Count -eq 0 -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
      elseif(-not $case.ExpectedError -and $un.Count -eq 0 -and $bn.Count -gt 0){'CHECKER_IMPROVEMENT'}
