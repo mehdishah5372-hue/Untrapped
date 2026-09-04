@@ -63,7 +63,7 @@ try {
     foreach($sample in $truePositives){
         if(Legacy-Test -Text $sample.Text -ExitCode $sample.Exit -HttpStatus $sample.Http){$legacyTrue++}
         $before=@(Get-ErrorLibraryRecords).Count
-        $r=@(Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'true-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'benchmark')
+        $r=@(Force-DiagnosticScan -Source 'diagnostic-sandbox' -Artifact 'true-positive-corpus' -Lines @($sample.Text) -ExitCode $sample.Exit -HttpStatus $sample.Http -Stage 'benchmark' | Where-Object { $_ -and $_.PSObject.Properties.Name -contains 'fingerprint' })
         if($r.Count -gt 0){$forceTrue++}
         $after=@(Get-ErrorLibraryRecords)
         $record=@($after|Where-Object{[string]$_.text -eq [string]$sample.Text}|Select-Object -Last 1)
