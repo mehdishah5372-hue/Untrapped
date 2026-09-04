@@ -44,7 +44,7 @@ function Normalize-Domains($domains) {
     @($domains | Where-Object { $_ -and $_.ToString() -notmatch '[\s#]' } | ForEach-Object { $_.ToString().ToLowerInvariant().TrimEnd('.') })
 }
 function Test-Config($config) {
-    foreach ($name in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains')) { if ($null -eq $config.$name) { throw "Missing config property: $name" } }
+    foreach ($name in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains','browserOnlyDomains')) { if ($null -eq $config.$name) { throw "Missing config property: $name" } }
     [void][TimeSpan]::Parse([string]$config.start); [void][TimeSpan]::Parse([string]$config.end)
     $all = @(Normalize-Domains (@($config.domains)+@($config.alwaysBlockedDomains)+@($config.alwaysAllowedDomains)))
     if ($all.Count -eq 0) { throw 'Configuration contains no domains.' }
@@ -59,6 +59,10 @@ function Test-OverrideActive {
     $path=Join-Path $Root 'override-until.txt'
     if (-not (Test-Path $path)) { return $false }
     try { return ([DateTime]::UtcNow -lt ([DateTime]::Parse((Get-Content $path -Raw)).ToUniversalTime())) } catch { return $false }
+}
+function Get-OsBlockDomains($domains,$browserOnlyDomains) {
+    $browser=[System.Collections.Generic.HashSet[string]]::new([string[]](Normalize-Domains $browserOnlyDomains))
+    @(Normalize-Domains $domains | Where-Object { -not $browser.Contains([string]$_) })
 }
 function Get-DomainIPs($domains) {
     $set=[System.Collections.Generic.HashSet[string]]::new()
@@ -87,7 +91,8 @@ try {
         $scheduled=if($active -and -not $override){@(Normalize-Domains $config.domains)}else{@()}
         $always=@(Normalize-Domains $config.alwaysBlockedDomains)
         $allowed=@(Normalize-Domains $config.alwaysAllowedDomains)
-        $blockedIps=@(Get-DomainIPs (@($scheduled)+@($always)))
+        $osDomains=@(Get-OsBlockDomains (@($scheduled)+@($always)) $config.browserOnlyDomains)
+        $blockedIps=@(Get-DomainIPs $osDomains)
         $allowedIps=@(Get-DomainIPs $allowed)
         $allowedSet=[System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
         $ips=@($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
@@ -100,7 +105,7 @@ try {
         }
         if ($filter -ne $lastFilter) {
             if($handle -ne $InvalidHandle){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null;$handle=$InvalidHandle}
-            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted)."
+            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted; $($osDomains.Count) OS-block domains after browser-only exclusions)."
             $handle=[UntrappedWinDivert.Native]::WinDivertOpen($filter,$LayerNetwork,$Priority,[UInt64]$FlagDrop)
             if($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "WinDivertOpen failed with Windows error $errorCode."}
             $lastFilter=$filter
