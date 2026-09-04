@@ -68,3 +68,4 @@ Save-J 'run' 'result.json' ([ordered]@{result='SUCCESS';stages=$summary;complete
 Write-Host 'REMOTE UAUD HARNESS PASS'
 Write-Host ('EVIDENCE_ROOT: '+$Run)
 Write-Host ('STAGES: '+$summary.Count)
+exit 0
