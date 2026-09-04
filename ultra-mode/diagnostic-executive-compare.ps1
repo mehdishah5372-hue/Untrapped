@@ -60,15 +60,30 @@ try{
    $b=Invoke-Impl $base $case 'baseline';$u=Invoke-Impl $Current $case 'upgrade';$bn=@($b.records);$un=@($u.records)
    $highBaseline=@($bn|Where-Object{(Get-BaselineConfidenceScore $_.text) -ge 50})
    $matchedHigh=0;$unmatchedHigh=@()
+   function Same-DiagnosticRecord([object]$a,[object]$b){
+     return ([int]$a.schema -eq [int]$b.schema -and
+       [string]$a.stream -eq [string]$b.stream -and
+       [string]$a.source -eq [string]$b.source -and
+       [string]$a.artifact -eq [string]$b.artifact -and
+       [string]$a.category -eq [string]$b.category -and
+       [string]$a.fingerprint -eq [string]$b.fingerprint -and
+       [string]$a.text -eq [string]$b.text -and
+       [int]$a.exit_code -eq [int]$b.exit_code -and
+       [int]$a.http_status -eq [int]$b.http_status -and
+       [string]$a.candidate_hash -eq [string]$b.candidate_hash -and
+       [string]$a.previous_candidate_hash -eq [string]$b.previous_candidate_hash -and
+       [int]$a.attempt -eq [int]$b.attempt -and
+       [string]$a.repair_action -eq [string]$b.repair_action -and
+       [string]$a.syntax_result -eq [string]$b.syntax_result -and
+       [string]$a.context -eq [string]$b.context)
+   }
    foreach($br in $highBaseline){
      $hit=$false
-     foreach($ur in $un){
-       if((ConvertTo-Json $ur -Compress -Depth 10) -eq (ConvertTo-Json $br -Compress -Depth 10)){$hit=$true;break}
-     }
+     foreach($ur in $un){if(Same-DiagnosticRecord $ur $br){$hit=$true;break}}
      if($hit){$matchedHigh++}else{$unmatchedHigh+=$br}
    }
    $allUpgradeRecordsMatchBaseline=$true
-   foreach($ur in $un){if(-not (@($bn|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $ur -Compress -Depth 10)}))){$allUpgradeRecordsMatchBaseline=$false;break}}
+   foreach($ur in $un){if(-not (@($bn|Where-Object{Same-DiagnosticRecord $_ $ur}))){$allUpgradeRecordsMatchBaseline=$false;break}}
    $falsePositiveBaseline=@($bn|Where-Object{(Get-BaselineConfidenceScore $_.text) -lt 50})
    $filteredFalse=@($falsePositiveBaseline|Where-Object{-not (@($un|Where-Object{(ConvertTo-Json $_ -Compress -Depth 10) -eq (ConvertTo-Json $_ -Compress -Depth 10)}))})
    $classification=if($case.ExpectedError -and $highBaseline.Count -eq 0 -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
