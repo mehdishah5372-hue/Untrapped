@@ -52,7 +52,7 @@ $null=Scan-ErrorOutput -Source 'executive' -Artifact ([string]$case.Name) -Lines
     if(Test-Path -LiteralPath $eventsPath){
       $records=@(Get-Content -LiteralPath $eventsPath | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
     }
-    [pscustomobject]@{selected=@();records=@($records);count=$records.Count}
+    [pscustomobject]@{selected=@();records=@($records|ForEach-Object{Normalize $_});count=$records.Count}
   } finally {
     Remove-Item -LiteralPath $libPath,$casePath,$runnerPath,$eventsPath -Force -ErrorAction SilentlyContinue
   }
@@ -102,9 +102,10 @@ try{
    $classification=if($case.ExpectedError -and $highBaseline.Count -eq 0 -and $bn.Count -eq 0){'BASELINE_BLIND_SPOT'}
      elseif(-not $case.ExpectedError -and $un.Count -eq 0 -and $bn.Count -gt 0){'CHECKER_IMPROVEMENT'}
      elseif(-not $case.ExpectedError -and $un.Count -gt 0){'FALSE_POSITIVE_RETAINED'}
-     elseif($case.ExpectedError -and $highBaseline.Count -gt 0 -and $unmatchedHigh.Count -eq 0 -and $allUpgradeRecordsMatchBaseline){
+     elseif($case.ExpectedError -and $highBaseline.Count -gt 0 -and $unmatchedHigh.Count -eq 0){
        if($bn.Count -eq $un.Count){'SUSTAINED_IDENTICAL'}else{'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'}
      }
+     elseif($case.ExpectedError -and $highBaseline.Count -eq 0 -and $falsePositiveBaseline.Count -gt 0 -and @($un|Where-Object{(Get-BaselineConfidenceScore $_.text) -ge 50}).Count -gt 0){'CHECKER_IMPROVEMENT'}
      elseif($case.ExpectedError -and $highBaseline.Count -gt 0){'REPORTER_OR_DIAGNOSIS_DIVERGENCE'}
      else{'NO_EVENT'}
    if($classification -eq 'CHECKER_IMPROVEMENT' -or $classification -eq 'CHECKER_FILTERED_BASELINE_NO_REPORTER_CHANGE'){$baselineFalse++}
