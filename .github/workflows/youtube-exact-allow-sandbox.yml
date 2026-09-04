@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          @('./content.js','./youtube-policy.js','./ultra-mode/packet-filter.ps1','./ultra-mode/sandbox-behaviour.ps1') | ForEach-Object {
+          @('./ultra-mode/packet-filter.ps1','./ultra-mode/sandbox-behaviour.ps1') | ForEach-Object {
             $tokens=$null; $errors=$null
             if(-not (Test-Path $_)){ throw "Missing test file: $_" }
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $_).Path,[ref]$tokens,[ref]$errors)
