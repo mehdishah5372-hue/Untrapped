@@ -1,9 +1,0 @@
-services:
-  untrapped-update-middleman:
-    build: .
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      PORT: "8080"
-      UNTRAPPED_UPSTREAM: "https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/main/"
