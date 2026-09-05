@@ -16,16 +16,21 @@ namespace UntrappedBehaviour { public static class Native {
 $ip=@(Resolve-DnsName example.com -Type A -DnsOnly -ErrorAction Stop|Where-Object{$_.IPAddress}|Select-Object -ExpandProperty IPAddress|Select-Object -First 1)
 if(-not $ip){throw 'Could not resolve example.com IPv4.'}
 $target=[string]$ip
+$resolve="example.com:443:$target"
 function Invoke-Probe([string]$Label){
-  $args=@('-4','--noproxy','*','-sS','-o','NUL','--connect-timeout','5','--max-time','8','https://example.com/')
+  # --resolve is mandatory here: DNS may return multiple Cloudflare A records,
+  # while the WinDivert filter is intentionally pinned to one concrete IPv4.
+  # Without this binding, curl can legitimately connect to a different A
+  # record and turn a real DROP test into a false negative.
+  $args=@('-4','--noproxy','*','--resolve',$resolve,'-sS','-o','NUL','--connect-timeout','5','--max-time','8','https://example.com/')
   & curl.exe @args 2>$null
   $rc=$LASTEXITCODE
-  Write-Host "PROBE $Label exit=$rc"
+  Write-Host "PROBE $Label target=$target exit=$rc"
   return $rc
 }
 $baseline=Invoke-Probe 'baseline-allow'
 if($baseline -ne 0){throw "Baseline network access to example.com failed; cannot certify OS behaviour. exit=$baseline"}
-# Match the actual outbound TCP SYN/connection packets directly.  Omitting
+# Match the exact destination of the probe's TCP connection.  Omitting
 # outbound/loopback qualifiers makes the behavioural proof independent of
 # filter-direction classification while remaining specific to the target.
 $filter="ip.DstAddr == $target and tcp.DstPort == 443"
