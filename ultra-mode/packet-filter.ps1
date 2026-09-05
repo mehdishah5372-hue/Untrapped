@@ -1,19 +1,21 @@
 # Untrapped Ultra Mode — WinDivert packet-level destination blocker
-# Uses WinDivert's kernel packet filter with DROP.
-# Scheduled domains are blocked during the configured schedule; alwaysBlockedDomains
-# are blocked 24/7. alwaysAllowedDomains are resolved and removed from the DROP IP set.
-# This script intentionally does not modify Hosts, Brave, Firewall, WFP, Winsock,
-# DNS, or VPN configuration. A signed override is the only policy bypass.
+# Fail-closed: malformed policy/DNS failure keeps the last known-good filter or
+# installs an emergency HTTPS/QUIC DROP filter. Filter refresh opens the new
+# handle before closing the old one, preventing an intentional refresh gap.
+param(
+    [int]$Priority = 1000,
+    [int]$RefreshSeconds = $(if ($env:UNTRAPPED_REFRESH_SECONDS) { [int]$env:UNTRAPPED_REFRESH_SECONDS } else { 30 }),
+    [string]$ConfigOverride = ''
+)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ConfigPath = Join-Path $Root 'config.json'
-$RefreshSeconds = 30
-$Priority = 1000
+$ConfigPath = if ($ConfigOverride) { $ConfigOverride } else { Join-Path $Root 'config.json' }
 $LayerNetwork = 0
 $FlagDrop = 0x0002
 $InvalidHandle = [IntPtr](-1)
+$EmergencyFilter = 'outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443)'
 
-foreach ($required in @('WinDivert.dll','WinDivert64.sys','config.json')) {
+foreach ($required in @('WinDivert.dll','WinDivert64.sys')) {
     if (-not (Test-Path (Join-Path $Root $required))) { throw "$required not found in $Root." }
 }
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -62,50 +64,69 @@ function Test-OverrideActive {
 }
 function Get-DomainIPs($domains) {
     $set=[System.Collections.Generic.HashSet[string]]::new()
+    $failures=0
     foreach ($domain in @(Normalize-Domains $domains | Where-Object { $_ -notmatch '^\*\.' })) {
         $resolved=$false
         foreach ($type in @('A','AAAA')) {
             try { Resolve-DnsName -Name $domain -Type $type -DnsOnly -ErrorAction Stop | ForEach-Object { if ($_.IPAddress) { [void]$set.Add($_.IPAddress); $resolved=$true } } } catch { }
         }
-        if (-not $resolved) { Write-Host "Warning: could not resolve $domain" }
+        if (-not $resolved) { $failures++ ; Write-Host "Warning: could not resolve $domain" }
     }
-    @($set)
+    [pscustomobject]@{ IPs=@($set); FailedCount=$failures }
 }
 function New-WinDivertFilter($ips) {
     $clauses=foreach ($ip in $ips) { try { $parsed=[System.Net.IPAddress]::Parse($ip); if($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork){"ip.DstAddr == $ip"}else{"ipv6.DstAddr == $ip"} } catch { } }
     if (-not $clauses -or @($clauses).Count -eq 0) { return $null }
     "outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443) and (" + (($clauses | ForEach-Object { "($_)" }) -join ' or ') + ")"
 }
+function Set-FilterAtomic([string]$NewFilter,[string]$Reason) {
+    if ([string]::IsNullOrWhiteSpace($NewFilter)) { return $false }
+    if ($script:lastFilter -eq $NewFilter -and $script:handle -ne $InvalidHandle) { return $true }
+    Write-Host "Opening candidate WinDivert DROP filter (priority=$Priority): $Reason"
+    $newHandle=[UntrappedWinDivert.Native]::WinDivertOpen($NewFilter,$LayerNetwork,[int16]$Priority,[UInt64]$FlagDrop)
+    if($newHandle -eq $InvalidHandle -or $newHandle -eq [IntPtr]::Zero){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "WinDivertOpen failed with Windows error $errorCode."}
+    $oldHandle=$script:handle
+    $script:handle=$newHandle
+    $script:lastFilter=$NewFilter
+    if($oldHandle -ne $InvalidHandle -and $oldHandle -ne [IntPtr]::Zero){[UntrappedWinDivert.Native]::WinDivertClose($oldHandle)|Out-Null}
+    Write-Host "WinDivert DROP ACTIVE. $Reason"
+    return $true
+}
 
 $handle=$InvalidHandle; $lastFilter=$null
 try {
-    Write-Host 'Untrapped Ultra Mode WinDivert filter starting.'
+    Write-Host "Untrapped Ultra Mode WinDivert filter starting (priority=$Priority, refresh=${RefreshSeconds}s)."
     while ($true) {
-        $config=Get-Config; Test-Config $config
-        $override=Test-OverrideActive
-        $active=Test-UltraActive $config
-        $scheduled=if($active -and -not $override){@(Normalize-Domains $config.domains)}else{@()}
-        $always=@(Normalize-Domains $config.alwaysBlockedDomains)
-        $allowed=@(Normalize-Domains $config.alwaysAllowedDomains)
-        $blockedIps=@(Get-DomainIPs (@($scheduled)+@($always)))
-        $allowedIps=@(Get-DomainIPs $allowed)
-        $allowedSet=[System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
-        $ips=@($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
-        $filter=New-WinDivertFilter $ips
+        try {
+            $config=Get-Config; Test-Config $config
+            $override=Test-OverrideActive
+            $active=Test-UltraActive $config
+            $scheduled=if($active -and -not $override){@(Normalize-Domains $config.domains)}else{@()}
+            $always=@(Normalize-Domains $config.alwaysBlockedDomains)
+            $allowed=@(Normalize-Domains $config.alwaysAllowedDomains)
+            $blockedResult=Get-DomainIPs (@($scheduled)+@($always))
+            $allowedResult=Get-DomainIPs $allowed
+            $blockedIps=@($blockedResult.IPs)
+            $allowedIps=@($allowedResult.IPs)
+            $allowedSet=[System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
+            $ips=@($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
+            $filter=New-WinDivertFilter $ips
 
-        if (-not $filter) {
-            if ($handle -ne $InvalidHandle) { [UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null; $handle=$InvalidHandle; $lastFilter=$null; Write-Host 'WinDivert block INACTIVE.' }
-            if($active -and -not $override -and $blockedIps.Count -eq 0 -and $always.Count -gt 0){ Write-Host 'No block filter opened: all configured block targets failed DNS resolution.' }
-            Start-Sleep -Seconds $RefreshSeconds; continue
-        }
-        if ($filter -ne $lastFilter) {
-            if($handle -ne $InvalidHandle){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null;$handle=$InvalidHandle}
-            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted)."
-            $handle=[UntrappedWinDivert.Native]::WinDivertOpen($filter,$LayerNetwork,$Priority,[UInt64]$FlagDrop)
-            if($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "WinDivertOpen failed with Windows error $errorCode."}
-            $lastFilter=$filter
-            Write-Host "WinDivert packet block ACTIVE. Policy state: $(if($override){'OVERRIDE'}elseif($active){'SCHEDULED ACTIVE'}else{'ALWAYS-BLOCK-ONLY'})."
+            if ($active -and -not $override -and ($blockedResult.FailedCount -gt 0 -or ($scheduled.Count + $always.Count) -gt 0 -and $blockedIps.Count -eq 0)) {
+                Set-FilterAtomic $EmergencyFilter 'FAIL-CLOSED DNS/policy resolution fallback; configured web traffic is blocked until resolution recovers.' | Out-Null
+            } elseif ($filter) {
+                Set-FilterAtomic $filter "Policy state=$(if($override){'OVERRIDE'}elseif($active){'SCHEDULED ACTIVE'}else{'ALWAYS-BLOCK-ONLY'}); blockedIPs=$($ips.Count); allowedIPs=$($allowedIps.Count)." | Out-Null
+            } elseif ($handle -ne $InvalidHandle) {
+                [UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null; $handle=$InvalidHandle; $lastFilter=$null; Write-Host 'WinDivert block INACTIVE.'
+            }
+        } catch {
+            Write-Host "FAIL-CLOSED ERROR: $($_.Exception.Message)"
+            if ($handle -eq $InvalidHandle) {
+                try { Set-FilterAtomic $EmergencyFilter 'Emergency fail-closed filter after control-plane error.' | Out-Null } catch { Write-Host "CRITICAL: emergency filter could not open: $($_.Exception.Message)" }
+            }
         }
         Start-Sleep -Seconds $RefreshSeconds
     }
-} finally { if($handle -ne $InvalidHandle -and $handle -ne [IntPtr]::Zero){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null} }
+} finally {
+    if($handle -ne $InvalidHandle -and $handle -ne [IntPtr]::Zero){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null}
+}
