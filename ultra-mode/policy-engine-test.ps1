@@ -1,7 +1,7 @@
 $ErrorActionPreference="Stop"
 . "$PSScriptRoot\PolicyEngine.ps1"
 $p=Read-PolicyConfig
-$id=[string]$p.AllowedVideoIds[0]
+$id=[string](@($p.AllowedVideoIds)[0])
 Write-Host "Loaded allowlisted ID: $id"
 function Assert-Decision($u,$expected){
   $x=Resolve-PolicyDecision -Url $u -Policy $p
