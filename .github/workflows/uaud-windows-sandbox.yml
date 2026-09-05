@@ -46,7 +46,7 @@ jobs:
           foreach($e in $entries){
             $u=[Uri][string]$e.url
             if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com$' -or $u.AbsolutePath -ne '/watch'){throw "Bad allowed URL: $($e.url)"}
-            $m=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)')
+            $m=[regex]::Matches($u.Query.TrimStart('?'),'(?:^|&)v=([^&]*)')
             if($m.Count -ne 1 -or $m[0].Groups[1].Value -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Bad video id: $($e.url)"}
             if([string]::IsNullOrWhiteSpace([string]$e.reason)){throw "Missing reason: $($e.url)"}
             $ids+=$m[0].Groups[1].Value
