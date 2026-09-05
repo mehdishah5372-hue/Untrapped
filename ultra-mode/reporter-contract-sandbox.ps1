@@ -4,7 +4,7 @@ $url="https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/$baselineCom
 $canonical=Join-Path $env:TEMP 'ErrorLibrary-canonical.ps1'
 Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $canonical
 $text=Get-Content $canonical -Raw
-if($text -notmatch "\$ErrorLibraryVersion\s*=\s*'1\.1\.1'"){throw 'Pinned baseline reporter version mismatch'}
+if($text -notmatch '\$ErrorLibraryVersion\s*=\s*''1\.1\.1'''){throw 'Pinned baseline reporter version mismatch'}
 $localPath=Join-Path $PSScriptRoot 'ErrorLibrary.ps1';$localText=Get-Content $localPath -Raw
 $canonReporter=[regex]::Match($text,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
 $localReporter=[regex]::Match($localText,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
