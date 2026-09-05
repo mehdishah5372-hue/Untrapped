@@ -26,18 +26,14 @@ function Invoke-Probe([string]$Label){
   & curl.exe @args 2>$errFile
   $rc=$LASTEXITCODE
   $err=''
-  if(Test-Path $errFile){$err=(Get-Content $errFile -Raw).Trim()}
+  if(Test-Path $errFile){$raw=Get-Content $errFile -Raw -ErrorAction SilentlyContinue;if($null -ne $raw){$err=([string]$raw).Trim()}}
   if($err){Write-Host "PROBE $Label target=$target exit=$rc stderr=$err"}else{Write-Host "PROBE $Label target=$target exit=$rc"}
   return $rc
 }
 try{
-  # Establish an actual working path before interception. A nonzero baseline
-  # means the runner cannot distinguish enforcement from ordinary failure.
   $baseline=Invoke-Probe 'baseline-allow'
   if($baseline -ne 0){throw "Baseline network access to example.com failed; cannot certify OS behaviour. exit=$baseline"}
 
-  # Match the exact destination of the probe's TCP connection. The DROP flag
-  # tells WinDivert to discard matching packets instead of reinjecting them.
   $filter="ip.DstAddr == $target and tcp.DstPort == 443"
   Write-Host "DROP FILTER: $filter"
   $h=[UntrappedBehaviour.Native]::WinDivertOpen($filter,0,30000,[UInt64]0x0002)
@@ -46,7 +42,6 @@ try{
     Start-Sleep -Milliseconds 300
     $blockedResults=@()
     1..3|ForEach-Object{$blockedResults+=Invoke-Probe ("policy-blocked-$_");Start-Sleep -Milliseconds 200}
-    # All three fresh TCP attempts must fail while the DROP handle is live.
     if(@($blockedResults|Where-Object{$_ -eq 0}).Count -ne 0){throw "At least one network request succeeded while the WinDivert DROP filter was active. exits=$($blockedResults -join ',')"}
     if(@($blockedResults|Where-Object{$_ -eq 28}).Count -lt 1){throw "DROP did not produce a curl connection-timeout on any trial. exits=$($blockedResults -join ',')"}
     Write-Host "OS BEHAVIOUR PASS: all 3 real network attempts were blocked; timeout trials=$(@($blockedResults|Where-Object{$_ -eq 28}).Count)."
