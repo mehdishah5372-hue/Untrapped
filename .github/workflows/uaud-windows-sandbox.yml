@@ -66,6 +66,13 @@ jobs:
             if($ok -ne $c.allow){throw "Policy mismatch: $($c.url) expected=$($c.allow) actual=$ok"}
           }
           Write-Host "YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS ($($entries.Count) allowed URL(s), $($cases.Count) decision cases)"
+      - name: Policy engine deterministic regression gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          & ./ultra-mode/policy-engine-test.ps1
+          if($LASTEXITCODE -ne 0){throw 'Policy engine regression failed'}
+
       - name: Exhaustive PowerShell YouTube policy stress test
         shell: powershell
         timeout-minutes: 5
