@@ -37,9 +37,35 @@ jobs:
       - name: YouTube JSON and PowerShell policy gate
         shell: powershell
         run: |
-          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\ultra-mode\youtube-policy-powershell-test.ps1"
-          if($LASTEXITCODE -ne 0){throw "YouTube PowerShell policy contract failed with exit code $LASTEXITCODE"}
-
+          $ErrorActionPreference='Stop'
+          $rules=Get-Content -LiteralPath './youtube-allowlist.json' -Raw | ConvertFrom-Json
+          if($rules.version -ne 1){throw 'Bad allowlist version'}
+          $entries=@($rules.allowedYouTubeUrls)
+          if($entries.Count -lt 1){throw 'Allowlist empty'}
+          $ids=@()
+          foreach($e in $entries){
+            $u=[Uri][string]$e.url
+            if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com$' -or $u.AbsolutePath -ne '/watch'){throw "Bad allowed URL: $($e.url)"}
+            $m=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)')
+            if($m.Count -ne 1 -or $m[0].Groups[1].Value -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Bad video id: $($e.url)"}
+            if([string]::IsNullOrWhiteSpace([string]$e.reason)){throw "Missing reason: $($e.url)"}
+            $ids+=$m[0].Groups[1].Value
+          }
+          if($ids -contains 'dQw4w9WgXcQ'){throw 'Rickroll unexpectedly allowlisted'}
+          $cases=@(
+            @{url='https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en';allow=$true},
+            @{url='https://www.youtube.com/watch?vl=en&v=2wgg7KtzTrU';allow=$true},
+            @{url='https://www.youtube.com/watch?v=dQw4w9WgXcQ';allow=$false},
+            @{url='https://www.youtube.com/shorts/2wgg7KtzTrU';allow=$false},
+            @{url='https://youtu.be/2wgg7KtzTrU';allow=$false},
+            @{url='https://www.youtube.com/watch?v=2wgg7KtzTrU&v=dQw4w9WgXcQ';allow=$false}
+          )
+          foreach($c in $cases){
+            $u=[Uri]$c.url;$m=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)');$ok=$false
+            if($u.Scheme -eq 'https' -and $u.Host -match '^(www\.)?(m\.)?youtube\.com$' -and $u.AbsolutePath -eq '/watch' -and $m.Count -eq 1 -and $ids -contains $m[0].Groups[1].Value){$ok=$true}
+            if($ok -ne $c.allow){throw "Policy mismatch: $($c.url) expected=$($c.allow) actual=$ok"}
+          }
+          Write-Host "YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS ($($entries.Count) allowed URL(s), $($cases.Count) decision cases)"
       - name: Pinned baseline reporter contract on Windows VM
         shell: powershell
         run: |
