@@ -7,15 +7,18 @@ $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $workers=@($null,$null)
 function Start-Worker([int]$Priority){
-  $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $Root 'packet-filter.ps1'),'-Priority',$Priority,'-RefreshSeconds',$RefreshSeconds,'-ConfigOverride',$ConfigPath)
-  Start-Process -FilePath 'powershell.exe' -ArgumentList $args -PassThru -WindowStyle Hidden
+  $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $Root 'packet-filter.ps1'),'-Priority',[string]$Priority,'-RefreshSeconds',[string]$RefreshSeconds,'-ConfigOverride',$ConfigPath)
+  return Start-Process -FilePath 'powershell.exe' -ArgumentList $args -PassThru -WindowStyle Hidden
 }
 function Worker-IsAlive($w){
   if($null -eq $w){return $false}
   try { return -not [bool]$w.HasExited } catch { return $false }
 }
 try {
-  for($i=0;$i -lt 2;$i++){$workers[$i]=Start-Worker (if($i -eq 0){1000}else{999})}
+  for($i=0;$i -lt 2;$i++){
+    $priority=if($i -eq 0){1000}else{999}
+    $workers[$i]=Start-Worker $priority
+  }
   Write-Host "SUPERVISOR STARTED workers=$($workers.Id -join ',')"
   while($true){
     for($i=0;$i -lt 2;$i++){
