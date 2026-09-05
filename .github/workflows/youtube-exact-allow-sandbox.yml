@@ -123,6 +123,52 @@ jobs:
           Write-Host 'WINDIVERT KERNEL SMOKE PASS: elevated Windows runner opened the modified filter process.'
           Write-Host 'WINDIVERT NOTE: YouTube is intentionally browser-only in this architecture.'
 
+      - name: 1000 real-video exact-allow stress test
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --disable-pip-version-check -q yt-dlp
+          $json="$env:TEMP\yt-random-1000.json"
+          $queries=@('music','science','math','history','gaming','technology','nature','documentary','cooking','sports')
+          $items=@()
+          foreach($q in $queries){
+            $raw=& python -m yt_dlp --flat-playlist --dump-single-json --playlist-end 100 --no-warnings "ytsearch100:$q" 2>$null
+            if($LASTEXITCODE -eq 0 -and $raw){
+              try {
+                $j=$raw | ConvertFrom-Json
+                foreach($e in @($j.entries)){
+                  if($e.id -and $e.ie_key -match 'Youtube'){$items += [pscustomobject]@{id=[string]$e.id;query=$q}}
+                }
+              } catch {}
+            }
+            if(@($items|Sort-Object id -Unique).Count -ge 1000){break}
+          }
+          $videos=@($items|Sort-Object id -Unique|Select-Object -First 1000)
+          if($videos.Count -lt 1000){throw "Only collected $($videos.Count) real YouTube videos"}
+          $videos | ConvertTo-Json -Depth 5 | Set-Content $json -Encoding UTF8
+          $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object {Test-Path $_} | Select-Object -First 1
+          if(-not $chrome){throw 'Chrome is not installed.'}
+          $root="$env:TEMP\untrapped-stress-$([guid]::NewGuid().ToString('N'))"; New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $pass=0;$fail=0;$errors=0;$i=0
+          foreach($v in $videos){
+            $i++
+            if($i % 3 -eq 0){$url="https://m.youtube.com/watch?vl=en&v=$($v.id)&utm_source=stress"}
+            elseif($i % 3 -eq 1){$url="https://www.youtube.com/watch?v=$($v.id)&hl=en&utm_campaign=stress"}
+            else{$url="https://youtube.com/watch?utm_medium=stress&v=$($v.id)"}
+            $out=Join-Path $root "$i.html";$profile=Join-Path $root "p$i"
+            try {
+              & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir=$profile --load-extension="$PWD" --dump-dom $url *> $out
+              $body=if(Test-Path $out){Get-Content $out -Raw}else{''}
+              if($body -match 'YouTube is blocked'){$pass++}else{$fail++;Add-Content "$root\FAILURES.txt" ([string]$i+[char]9+[string]$url)}
+            } catch {$errors++;Add-Content "$root\ERRORS.txt" ([string]$i+[char]9+[string]$url+[char]9+$_.Exception.Message)}
+            if(($i % 100)-eq 0){Write-Host "STRESS $i/1000 blocked=$pass notblocked=$fail errors=$errors"}
+          }
+          Write-Host "REAL VIDEO STRESS RESULT: total=$($videos.Count) blocked=$pass notblocked=$fail errors=$errors"
+          if($fail -ne 0 -or $errors -ne 0){Get-Content "$root\FAILURES.txt" -ErrorAction SilentlyContinue;Get-Content "$root\ERRORS.txt" -ErrorAction SilentlyContinue;throw 'One or more non-allowed real YouTube videos escaped the exact-allow policy.'}
+          if($pass -ne 1000){throw "Expected 1000 blocked videos; got $pass"}
+          Write-Host '1000/1000 REAL YOUTUBE VIDEOS BLOCKED: exact allowed video remains the only permitted video ID.'
+
       - name: Browser integration test
         shell: pwsh
         run: |
