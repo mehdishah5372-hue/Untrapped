@@ -6,10 +6,10 @@ function Test-Policy([string]$url){
   try{$u=[Uri]$url}catch{return $false}
   if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com$' -or $u.AbsolutePath -ne '/watch'){return $false}
   $pairs=$u.Query.TrimStart('?') -split '&' | Where-Object{$_ -ne ''}
-  $vs=@($pairs|Where-Object{$_ -match '^v='})
+  $vs=@($pairs|Where-Object{$_ -cmatch '^v='})
   if($vs.Count -ne 1){return $false}
   $id=$vs[0].Substring(2)
-  return ($ids -contains $id -and $id -match '^[A-Za-z0-9_-]{11}$')
+  return ($ids -ccontains $id -and $id -match '^[A-Za-z0-9_-]{11}$')
 }
 $allowId=$ids[0]
 $allowed=@("https://m.youtube.com/watch?v=$allowId","https://www.youtube.com/watch?vl=en&v=$allowId","https://youtube.com/watch?utm_source=x&v=$allowId&hl=en","https://www.youtube.com/watch?v=$allowId#fragment","https://www.youtube.com/watch?hl=en&v=$allowId&utm_campaign=x&t=120")
