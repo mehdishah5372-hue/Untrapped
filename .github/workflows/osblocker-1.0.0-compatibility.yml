@@ -8,23 +8,24 @@ permissions:
   contents: read
 jobs:
   compatibility:
-    # GitHub's public-repository Windows VM is a real disposable Windows VM
-    # and is sufficient for this sequential 1.0.0 -> 1.0.1 WinDivert test.
-    # Sleep/wake remains a separate hard gate because suspending a hosted
-    # runner destroys the CI control plane.
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Run 1.0.0 to 1.0.1 OS compatibility gate
+      - name: Baseline compatibility gate
         shell: powershell
         run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\osblocker-1.0.0-compatibility-certification.ps1"'
+      - name: 1000-case compatibility stress gate
+        shell: powershell
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\osblocker-1.0.0-compatibility-1000.ps1" -Cases 1000'
       - name: Upload compatibility evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: osblocker-1.0.0-compatibility-${{ github.run_id }}
-          path: ultra-mode/osblocker-1.0.0-compatibility-report.json
+          path: |
+            ultra-mode/osblocker-1.0.0-compatibility-report.json
+            ultra-mode/osblocker-1.0.0-compatibility-1000-report.json
           if-no-files-found: warn
