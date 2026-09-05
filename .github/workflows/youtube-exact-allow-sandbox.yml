@@ -168,7 +168,8 @@ jobs:
 
       - name: Fetch and compare pinned canonical reporter
         shell: pwsh
-        run: & ./ultra-mode/reporter-contract-sandbox.ps1
+        run: |
+          & ./ultra-mode/reporter-contract-sandbox.ps1
       - name: Canon reporter vs upgraded checker adversarial contract test
         shell: pwsh
         timeout-minutes: 10
