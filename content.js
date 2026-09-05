@@ -7,9 +7,8 @@
   // YouTube's SPA history navigations, which do not necessarily create a new request.
   async function enforceYouTubeUrl() {
     const policy = window.UntrappedYouTubePolicy;
-    if (policy && !policy.isYouTubeHost(location.hostname)) return;
+    if (!policy || !policy.isYouTubeHost(location.hostname)) return;
     try { await policy.loadRules(); } catch (_) { window.stop(); location.replace(chrome.runtime.getURL("blocked.html")); return; }
-    const policy = window.UntrappedYouTubePolicy;
     if (!policy || !policy.isYouTubeHost(location.hostname)) return;
     if (!policy.isAllowedYouTubeUrl(location.href)) {
       window.stop();
