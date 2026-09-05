@@ -1,6 +1,0 @@
-UNTRAPPED ENHANCED
-VERSION 3.0.0
-
-This fork is the enhanced build. It is intentionally distinct from the original Untrapped v2.0.1.
-
-Focus Mode persistently removes YouTube recommendation/discovery and engagement surfaces while keeping the video player usable.
