@@ -34,6 +34,13 @@ jobs:
             Write-Host "SYNTAX PASS: $($f.FullName)"
           }
 
+      - name: Pinned baseline reporter contract on Windows VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          & (Join-Path $PWD 'ultra-mode/reporter-contract-sandbox.ps1')
+          if($LASTEXITCODE -ne 0){throw 'Pinned reporter contract comparison failed'}
+
       - name: ErrorLibrary persistence gate
         shell: powershell
         run: |
