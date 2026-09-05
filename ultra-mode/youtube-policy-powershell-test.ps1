@@ -1,6 +1,6 @@
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $PSScriptRoot
-$rules=Get-Content (Join-Path $Root 'youtube-allowlist.json') -Raw|ConvertFrom-Json
+$path=Join-Path $Root 'youtube-allowlist.json'; Write-Host "ALLOWLIST PATH=$path EXISTS=$(Test-Path $path)"; $rules=Get-Content $path -Raw|ConvertFrom-Json; Write-Host "ALLOWLIST ENTRIES=$(@($rules.allowedYouTubeUrls).Count)"
 if([int]$rules.version -ne 1 -or -not [bool]$rules.policy.allowOnlyListedWatchVideos){throw 'Invalid allowlist policy'}
 $entries=@($rules.allowedYouTubeUrls)
 if($entries.Count -lt 1){throw 'YouTube allowlist is empty'}
