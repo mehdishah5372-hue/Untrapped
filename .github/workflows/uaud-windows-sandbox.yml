@@ -71,7 +71,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           . ./ultra-mode/PolicyEngine.ps1
-          $p=Read-PolicyConfig
+          $p=Read-PolicyConfig -Path (Join-Path $env:GITHUB_WORKSPACE 'youtube-allowlist.json')
           $id=[string](@($p.AllowedVideoIds)[0])
           $a=Resolve-PolicyDecision -Url "https://m.youtube.com/watch?v=$id&vl=en" -Policy $p
           $b=Resolve-PolicyDecision -Url "https://www.youtube.com/watch?V=$id" -Policy $p
