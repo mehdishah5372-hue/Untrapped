@@ -159,6 +159,14 @@ jobs:
           Write-Host "UAUD exit code: $rc"
           if ($rc -ne 0) { throw "Full UAUD launch chain failed with exit code $rc" }
 
+      - name: FINAL OS-level responsiveness and enforcement substrate gate
+        shell: powershell
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference='Stop'
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\ultra-mode\final-os-level-gate.ps1"
+          if($LASTEXITCODE -ne 0){throw "Final OS-level gate failed: $LASTEXITCODE"}
+
       - name: Verify protected boundary
         shell: powershell
         run: |
