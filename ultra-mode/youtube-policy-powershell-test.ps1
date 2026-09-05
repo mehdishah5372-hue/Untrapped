@@ -1,6 +1,6 @@
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $PSScriptRoot
-$rules=Get-Content (Join-Path $Root 'youtube-rules.json') -Raw|ConvertFrom-Json
+$rules=Get-Content (Join-Path $Root 'youtube-allowlist.json') -Raw|ConvertFrom-Json
 $entries=@($rules.allowedYouTubeUrls)
 if($entries.Count -lt 1){throw 'YouTube allowlist is empty'}
 foreach($entry in $entries){
