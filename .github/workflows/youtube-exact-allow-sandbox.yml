@@ -181,6 +181,13 @@ jobs:
           $sha=(Get-FileHash $canonical -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "CANONICAL REPORTER SHA256=$sha"
           $localSha=(Get-FileHash ./ultra-mode/ErrorLibrary.ps1 -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "SANDBOX REPORTER SHA256=$localSha"
           $canonVersion=[regex]::Match($text,'\$ErrorLibraryVersion\s*=\s*''([^'']+)''').Groups[1].Value;if($canonVersion -ne '1.1.1'){throw "Pinned baseline reporter version mismatch: $canonVersion"}
+          $canonReporter=[regex]::Match($text,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
+          $localText=Get-Content ./ultra-mode/ErrorLibrary.ps1 -Raw
+          $localReporter=[regex]::Match($localText,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
+          $normCanon=($canonReporter -replace '\s+',' ').Trim()
+          $normLocal=($localReporter -replace '\s+',' ').Trim()
+          if($normCanon -ne $normLocal){throw 'REPORTER IMPLEMENTATION DIVERGENCE: Save-ErrorEvent differs from pinned baseline'}
+          Write-Host 'SAVE-ERROR-EVENT IMPLEMENTATION: byte-normalized contract identical to pinned baseline'
           $tmp1="$env:TEMP\canon-record.jsonl";$tmp2="$env:TEMP\sandbox-record.jsonl"
           & powershell -NoProfile -Command ". '$canonical'; `$ErrorLibraryPath='$tmp1'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
           & powershell -NoProfile -Command ". './ultra-mode/ErrorLibrary.ps1'; `$ErrorLibraryPath='$tmp2'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
