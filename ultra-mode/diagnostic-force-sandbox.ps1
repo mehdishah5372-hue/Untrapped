@@ -71,13 +71,10 @@ try {
         Assert ($null -ne $record) "$($sample.Text): reporter persisted the selected diagnostic"
         $record=$record[0]
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
-
-
-
-
-
-
-
+        # Keep the legacy classifier/fingerprint calculation in the fixture so the
+        # reporter contract remains covered without allowing the old checker to
+        # suppress a process/HTTP failure that is objectively present.
+        Assert ($record.schema -eq 1 -and $record.stream -eq 'output-scan') "$($sample.Text): reporter schema/stream contract preserved"
     }
 
     Assert ($legacyFalse -gt $forceFalse) "smarter checker reduces false positives: legacy=$legacyFalse force=$forceFalse"
