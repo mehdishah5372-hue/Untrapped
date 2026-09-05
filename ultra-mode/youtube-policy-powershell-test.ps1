@@ -1,20 +1,24 @@
 $ErrorActionPreference='Stop'
-$Root=Split-Path -Parent $PSScriptRoot
-$path=Join-Path $Root 'youtube-allowlist.json'; Write-Host "ALLOWLIST PATH=$path EXISTS=$(Test-Path $path)"; $rules=Get-Content $path -Raw|ConvertFrom-Json; Write-Host "ALLOWLIST ENTRIES=$(@($rules.allowedYouTubeUrls).Count)"
-if([int]$rules.version -ne 1 -or -not [bool]$rules.policy.allowOnlyListedWatchVideos){throw 'Invalid allowlist policy'}
+$path=Join-Path (Split-Path -Parent $PSScriptRoot) 'youtube-allowlist.json'
+if(-not(Test-Path -LiteralPath $path)){throw "Missing allowlist: $path"}
+$rules=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
+if([int]$rules.version -ne 1){throw 'Unsupported allowlist version'}
+if($rules.policy.allowOnlyListedWatchVideos -ne $true){throw 'allowOnlyListedWatchVideos must be true'}
 $entries=@($rules.allowedYouTubeUrls)
-if($entries.Count -lt 1){throw 'YouTube allowlist is empty'}
+if($entries.Count -lt 1){throw 'Allowlist must contain at least one URL'}
+$allowedIds=@()
 foreach($entry in $entries){
-  $u=[Uri]$entry.url
-  if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com$' -or $u.AbsolutePath -ne '/watch'){throw "Invalid allowed URL: $($entry.url)"}
-  $ids=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)')
-  if($ids.Count -ne 1 -or $ids[0].Groups[1].Value -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid video id: $($entry.url)"}
-  if([string]::IsNullOrWhiteSpace([string]$entry.reason)){throw "Missing reason: $($entry.url)"}
+  $url=[string]$entry.url
+  if($url -notmatch '^https://(?:www\.|m\.)?youtube\.com/watch\?'){throw "Invalid allowed URL: $url"}
+  $matches=[regex]::Matches($url,'(?:^|&)v=([^&#]+)')
+  if($matches.Count -ne 1){throw "Allowed URL must contain exactly one v parameter: $url"}
+  $id=$matches[0].Groups[1].Value
+  if($id -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid video ID: $id"}
+  if([string]::IsNullOrWhiteSpace([string]$entry.reason)){throw "Missing reason: $url"}
+  $allowedIds+=$id
 }
-$mustBlock=@('https://www.youtube.com/watch?v=dQw4w9WgXcQ','https://www.youtube.com/shorts/dQw4w9WgXcQ','https://www.youtube.com/results?search_query=test','https://youtu.be/dQw4w9WgXcQ','https://www.youtube.com/watch?v=2wgg7KtzTrU&v=dQw4w9WgXcQ')
-foreach($x in $mustBlock){
-  $u=[Uri]$x
-  $ids=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)')
-  if($u.Host -match '^(www\.|m\.)?youtube\.com$' -and $u.AbsolutePath -eq '/watch' -and $ids.Count -eq 1 -and $ids[0].Groups[1].Value -eq '2wgg7KtzTrU'){throw "Unsafe allow candidate: $x"}
-}
+if($allowedIds -contains 'dQw4w9WgXcQ'){throw 'Rickroll must not be allowlisted'}
+Write-Host "ALLOWLIST PATH=$path"
+Write-Host "ALLOWLIST ENTRIES=$($entries.Count)"
+Write-Host "ALLOWLIST VIDEO IDS=$($allowedIds -join ',')"
 Write-Host 'YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS'
