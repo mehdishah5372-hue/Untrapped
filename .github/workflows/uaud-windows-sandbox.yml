@@ -37,7 +37,8 @@ jobs:
       - name: YouTube JSON and PowerShell policy gate
         shell: powershell
         run: |
-          try { & ./ultra-mode/youtube-policy-powershell-test.ps1; if($LASTEXITCODE -ne 0){throw 'script exit code nonzero'} } catch { Write-Host "YOUTUBE POLICY ERROR: $($_.Exception.Message)"; Write-Host $_.ScriptStackTrace; throw }
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\ultra-mode\youtube-policy-powershell-test.ps1"
+          if($LASTEXITCODE -ne 0){throw "YouTube PowerShell policy contract failed with exit code $LASTEXITCODE"}
 
       - name: Pinned baseline reporter contract on Windows VM
         shell: powershell
