@@ -353,46 +353,22 @@ jobs:
           if($liveFail -ne 0){throw "Live browser sample had $liveFail escapes"}
           Write-Host '1000/1000 REAL VIDEO IDS: all non-allowed IDs rejected by the exact-allow rule; live browser sample also blocked.'
 
-      - name: Fetch and compare immutable canonical reporter
+      - name: YouTube JSON and PowerShell policy gate
         shell: pwsh
         timeout-minutes: 5
         run: |
           $ErrorActionPreference='Stop'
-          $url='https://untrapped-update-middleman-000-999-production.up.railway.app/v1/artifact/ultra-mode/ErrorLibrary.ps1?ci=' + [DateTime]::UtcNow.Ticks
-          $canonical="$env:TEMP\ErrorLibrary-canonical.ps1"
-          Invoke-WebRequest -Uri $url -Headers @{'User-Agent'='UAUD-CANON-COMPARE/1.0'} -UseBasicParsing -OutFile $canonical
-          if(-not(Test-Path $canonical)){throw 'Canonical reporter download failed'}
-          $text=Get-Content $canonical -Raw
-          if($text -notmatch '\$ErrorLibraryVersion\s*=\s*''1\.0\.0|OSblocker 1\.0\.0'){throw 'Downloaded artifact is not identified as OSblocker 1.0.0'}
-          $sha=(Get-FileHash $canonical -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "CANONICAL REPORTER SHA256=$sha"
-          $localSha=(Get-FileHash ./ultra-mode/ErrorLibrary.ps1 -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "SANDBOX REPORTER SHA256=$localSha"
-          $canonVersion=[regex]::Match($text,'\$ErrorLibraryVersion\s*=\s*''([^'']+)''').Groups[1].Value;if($canonVersion -ne '1.0.0'){throw "Canonical version mismatch: $canonVersion"}
-          $tmp1="$env:TEMP\canon-record.jsonl";$tmp2="$env:TEMP\sandbox-record.jsonl"
-          & powershell -NoProfile -Command ". '$canonical'; `$ErrorLibraryPath='$tmp1'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
-          & powershell -NoProfile -Command ". './ultra-mode/ErrorLibrary.ps1'; `$ErrorLibraryPath='$tmp2'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
-          $a=(Get-Content $tmp1 -Raw|ConvertFrom-Json);$b=(Get-Content $tmp2 -Raw|ConvertFrom-Json)
-          $fields='schema','stream','source','artifact','category','fingerprint','text','exit_code','http_status','candidate_hash','previous_candidate_hash','attempt','repair_action','syntax_result','context'
-          foreach($field in $fields){if([string]$a.$field -ne [string]$b.$field){throw "REPORTER FIELD DIVERGENCE: $field canonical=[$($a.$field)] sandbox=[$($b.$field)]"}}
-          Write-Host 'CANONICAL REPORTER CONTRACT: PASS'
-          Write-Host 'UAUD/UARD/middleman-facing reporter uses the same Save-ErrorEvent schema; dynamic timestamp intentionally excluded.'
-      - name: Canon reporter vs upgraded checker adversarial contract test
+          & ./ultra-mode/youtube-policy-powershell-test.ps1
+          if($LASTEXITCODE -ne 0){throw 'YouTube PowerShell policy contract failed'}
+
+      - name: Pinned canonical reporter contract
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference='Stop'
-          . ./ultra-mode/ErrorLibrary.ps1
-          $fake=@('The term foo is not recognized as the name of a cmdlet, function, script file, or operable program.','ParserError: Unexpected token } in expression or statement.','[ERROR] WinDivert failed to initialize.','ERROR: HTTP 500 from remote endpoint.','Request timed out after 30 seconds.','Access denied while opening device.','WARNING: retrying connection.','Narrative: the previous test reported a failure, but this line is only context.','All systems operational.','Exception: System.InvalidOperationException: synthetic test failure.','FATAL: synthetic kernel failure.','404 Not Found','409 Conflict','429 Too Many Requests')
-          $out=@()
-          foreach($x in $fake){$r=@(Force-DiagnosticScan -Source 'adversarial-sandbox' -Artifact 'fake-error' -Lines @($x) -ExitCode 1 -HttpStatus 0 -Stage 'adversarial');$out+=[pscustomobject]@{input=$x;count=$r.Count;records=@($r)}}
-          $out|ConvertTo-Json -Depth 10|Set-Content "$env:TEMP\adversarial-results.json" -Encoding UTF8
-          Write-Host '=== UPGRADED CHECKER ADVERSARIAL RESULTS ===';$out|ForEach-Object{Write-Host ("count={0} input={1}" -f $_.count,$_.input)}
-          $canon=Join-Path $env:TEMP 'canonical-reporter.ps1'
-          if(Test-Path ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1){Copy-Item ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1 $canon -Force}elseif(Test-Path ./canon/ErrorLibrary.ps1){Copy-Item ./canon/ErrorLibrary.ps1 $canon -Force}else{throw 'Canonical ErrorLibrary.ps1 not present in sandbox checkout'}
-          $sandboxPath=(Resolve-Path ./ultra-mode/ErrorLibrary.ps1).Path
-          $compare=@()
-          foreach($x in $fake){$safe=$x.Replace("'","''");$cp=& powershell -NoProfile -Command ". '$canon';@(Classify-ErrorText -Text '$safe') -join '|'";$sp=& powershell -NoProfile -Command ". '$sandboxPath';@(Classify-ErrorText -Text '$safe') -join '|'";$compare+=[pscustomobject]@{input=$x;canonical=[string]$cp;sandbox=[string]$sp}}
-          $compare|ConvertTo-Json -Depth 5|Set-Content "$env:TEMP\reporter-contract.json" -Encoding UTF8
-          $bad=@($compare|Where-Object canonical -ne sandbox);Write-Host "REPORTER CLASSIFICATION CONTRACT: mismatches=$($bad.Count)";if($bad.Count){$bad|Format-List|Out-String|Write-Host;throw 'Reporter classification diverges from canonical.'};Write-Host 'REPORTER CONTRACT: PASS'
+          & ./ultra-mode/reporter-contract-sandbox.ps1
+          if($LASTEXITCODE -ne 0){throw 'Pinned canonical reporter contract failed'}
+
       - name: Browser integration test
         shell: pwsh
         run: |
