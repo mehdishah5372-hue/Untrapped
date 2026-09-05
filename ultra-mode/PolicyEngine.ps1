@@ -22,7 +22,7 @@ function Read-PolicyConfig([string]$Path = (Join-Path $PSScriptRoot '..\youtube-
   [pscustomobject]@{ Config=$cfg; Entries=$entries; AllowedVideoIds=$ids }
 }
 
-function Resolve-PolicyDecision([string]$Url, $Policy = (Read-PolicyConfig)) {
+function Resolve-PolicyDecision([string]$Url, $Policy) { if($null -eq $Policy){ $Policy=Read-PolicyConfig }
   $reason='Not an explicitly allowed YouTube watch URL'
   try { $u=[Uri]$Url } catch { return [pscustomobject]@{Decision='INVALID';Reason='Malformed URL';Url=$Url} }
   if ($u.Scheme -cne 'https') { return [pscustomobject]@{Decision='BLOCK';Reason='HTTPS required';Url=$Url} }
