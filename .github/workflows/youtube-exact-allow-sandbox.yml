@@ -130,7 +130,7 @@ jobs:
           $ErrorActionPreference='Stop'
           python -m pip install --disable-pip-version-check -q yt-dlp
           $json="$env:TEMP\yt-random-1000.json"
-          $queries=@('music','science','math','history','gaming','technology','nature','documentary','cooking','sports')
+          $queries=@('music','science','math','history','gaming','technology','nature','documentary','cooking','sports','news','education','programming','football','basketball','space','cars','travel','art','language','engineering','psychology','geography','physics','chemistry','biology','movies','comedy','podcasts','tutorial')
           $items=@()
           foreach($q in $queries){
             $raw=& python -m yt_dlp --flat-playlist --dump-single-json --playlist-end 100 --no-warnings "ytsearch100:$q" 2>$null
