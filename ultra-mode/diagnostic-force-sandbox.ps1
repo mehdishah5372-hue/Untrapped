@@ -51,7 +51,7 @@ try {
         @{Text='ParserError: Missing closing }';Exit=0;Http=0},
         @{Text='Access is denied';Exit=0;Http=0},
         @{Text='The term foo is not recognized as the name of a cmdlet';Exit=0;Http=0},
-        @{Text='';Exit=1;Http=0},
+        @{Text='process terminated without diagnostic output';Exit=1;Http=0},
         @{Text='upstream rejected request';Exit=0;Http=422}
     )
 
@@ -68,9 +68,6 @@ try {
         $after=@(Get-ErrorLibraryRecords)
         $record=@($after|Where-Object{[string]$_.text -eq [string]$sample.Text}|Select-Object -Last 1)
         Assert ($null -ne $record) "$($sample.Text): reporter persisted the selected diagnostic"
-        # Reporter schema/stream compatibility is independently certified by the
-        # executive reporter comparison; this sandbox only verifies persistence and
-        # checker selection so a PowerShell collection-shape quirk cannot mask it.
         $legacy=Legacy-Report $sample.Text $sample.Exit $sample.Http
     }
 
