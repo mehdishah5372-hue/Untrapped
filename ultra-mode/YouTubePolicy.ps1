@@ -27,8 +27,8 @@ function Resolve-YouTubePolicy([string]$Url,[object]$Config) {
     $default = [ordered]@{ decision='BLOCK'; reason='default-deny'; url=$Url }
     try { $uri = [Uri]$Url } catch { return [pscustomobject]($default + @{reason='invalid-url'}) }
     if ($uri.Scheme -cne 'https') { return [pscustomobject]($default + @{reason='scheme-not-https'}) }
-    $host = $uri.Host.ToLowerInvariant().TrimEnd('.')
-    if (@('youtube.com','www.youtube.com','m.youtube.com') -notcontains $host) { return [pscustomobject]($default + @{reason='host-not-allowlisted'}) }
+    $hostName = $uri.Host.ToLowerInvariant().TrimEnd('.')
+    if (@('youtube.com','www.youtube.com','m.youtube.com') -notcontains $hostName) { return [pscustomobject]($default + @{reason='host-not-allowlisted'}) }
     if ($uri.Port -ne 443) { return [pscustomobject]($default + @{reason='non-default-port'}) }
     if ($uri.UserInfo) { return [pscustomobject]($default + @{reason='credentials-present'}) }
     if ($uri.AbsolutePath -cne '/watch') { return [pscustomobject]($default + @{reason='path-not-watch'}) }
@@ -44,5 +44,5 @@ function Resolve-YouTubePolicy([string]$Url,[object]$Config) {
     $policy = Get-YouTubePolicyConfig $Config
     if (-not $policy.allowAdditionalQueryParameters -and $pairs.Count -ne 1) { return [pscustomobject]($default + @{reason='additional-query-parameters'}) }
     if (-not $policy.allowedIds.Contains([string]$v[0].value)) { return [pscustomobject]($default + @{reason='video-not-allowlisted'}) }
-    [pscustomobject]@{ decision='ALLOW'; reason='explicit-video-allowlist'; host=$host; path=$uri.AbsolutePath; videoId=[string]$v[0].value; url=$Url }
+    [pscustomobject]@{ decision='ALLOW'; reason='explicit-video-allowlist'; host=$hostName; path=$uri.AbsolutePath; videoId=[string]$v[0].value; url=$Url }
 }
