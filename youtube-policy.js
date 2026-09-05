@@ -1,6 +1,7 @@
 (() => {
   "use strict";
 
+  const RULES_URL = chrome.runtime.getURL("youtube-rules.json");
   const ALLOWED_VIDEO_ID = "2wgg7KtzTrU";
   const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com"]);
 
@@ -38,7 +39,7 @@
       : null;
   }
 
-  window.UntrappedYouTubePolicy = Object.freeze({
+  async function loadRules() { const r = await fetch(RULES_URL, {cache: "no-store"}); if (!r.ok) throw new Error("youtube-rules.json unavailable"); return await r.json(); }\n\n  window.UntrappedYouTubePolicy = Object.freeze({
     ALLOWED_VIDEO_ID,
     isYouTubeHost,
     getVideoId,
