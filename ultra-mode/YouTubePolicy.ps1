@@ -10,7 +10,7 @@ function Parse-PolicyQuery([string]$RawQuery) {
     @($RawQuery -split '&' | ForEach-Object {
         $i = $_.IndexOf('=')
         if ($i -lt 0) { $rk = $_; $rv = '' } else { $rk = $_.Substring(0,$i); $rv = $_.Substring($i+1) }
-        [pscustomobject]@{ key = Decode-PolicyComponent $rk; value = Decode-PolicyComponent $rv }
+        [pscustomobject]@{ rawKey=$rk; rawValue=$rv; key=Decode-PolicyComponent $rk; value=Decode-PolicyComponent $rv }
     })
 }
 
@@ -37,6 +37,8 @@ function Resolve-YouTubePolicy([string]$Url,[object]$Config) {
     try { $pairs = @(Parse-PolicyQuery $uri.Query.TrimStart('?')) } catch { return [pscustomobject]($default + @{reason='malformed-query'}) }
     $v = @($pairs | Where-Object { $_.key -ceq 'v' })
     if ($v.Count -ne 1) { return [pscustomobject]($default + @{reason=if($v.Count -eq 0){'missing-lowercase-v'}else{'duplicate-v'}}) }
+    if ([string]$v[0].rawKey -cne 'v') { return [pscustomobject]($default + @{reason='encoded-parameter-name'}) }
+    if ([string]$v[0].rawValue -cnotmatch '^[A-Za-z0-9_-]{11}$') { return [pscustomobject]($default + @{reason='encoded-or-invalid-video-id'}) }
     if ([string]$v[0].value -cnotmatch '^[A-Za-z0-9_-]{11}$') { return [pscustomobject]($default + @{reason='invalid-video-id'}) }
 
     $policy = Get-YouTubePolicyConfig $Config
