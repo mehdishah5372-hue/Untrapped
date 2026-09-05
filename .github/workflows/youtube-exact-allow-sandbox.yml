@@ -139,8 +139,8 @@ jobs:
           $allowed=Get-Content $out -Raw
           if($allowed -match 'YouTube is blocked'){throw 'Allowed video was blocked by extension'}
           $out2="$env:TEMP\untrapped-blocked.html"
-          & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir="$profile-blocked" --load-extension="$PWD" --dump-dom "https://www.youtube.com/watch?v=BaW_jenozKc" *> $out2
+          & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir="$profile-blocked" --load-extension="$PWD" --dump-dom "https://www.youtube.com/watch?v=dQw4w9WgXcQ" *> $out2
           $blocked=Get-Content $out2 -Raw
-          if($blocked -notmatch 'YouTube is blocked'){throw 'Different YouTube video was not blocked'}
-          Write-Host 'BROWSER INTEGRATION PASS: permitted video survived; different video was blocked.'
+          if($blocked -notmatch 'YouTube is blocked'){throw 'Rickroll video was not blocked'}
+          Write-Host 'BROWSER INTEGRATION PASS: permitted video survived; Rickroll was blocked.'
           Write-Host 'The runner tested the extension against live network navigation; YouTube may return consent/availability content for the allowed case, but it must not return the blocker page.'
