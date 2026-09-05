@@ -48,12 +48,12 @@ try{
  if(-not ('UntrappedPower.Sleep' -as [type])){Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-namespace UntrappedPower { public static class Sleep { [DllImport("PowrProf.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); } }
+namespace UntrappedPower { public static class Sleep { [DllImport("PowrProf.dll", SetLastError=true)] public static extern byte SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); } }
 "@}
  $suspendRequestedUtc=[DateTime]::UtcNow;$report.evidence.suspend_requested_utc=$suspendRequestedUtc.ToString('o');Event 'suspend-request' 'STARTED' 'Genuine Windows suspend requested through PowrProf.SetSuspendState(FALSE,...).'
- $suspendOk=[UntrappedPower.Sleep]::SetSuspendState($false,$false,$false);if(-not $suspendOk){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();Fail 'suspend-request' "SetSuspendState failed with Windows error $errorCode."}
+ $suspendResult=[UntrappedPower.Sleep]::SetSuspendState($false,$false,$false);if($suspendResult -eq 0){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();Fail 'suspend-request' "SetSuspendState failed with Windows error $errorCode."}
  $resumeDeadline=(Get-Date).AddSeconds($ResumeTimeoutSeconds);$powerEvidence=$null
- while((Get-Date)-lt $resumeDeadline){Start-Sleep -Seconds 2;$powerEvidence=Get-PowerEvents $preEventWindow;if($powerEvidence.sleep_count -gt 0 -and $powerEvidence.resume_count -gt 0){$sleepCandidate=[DateTime]::Parse($powerEvidence.latest_sleep_utc).ToUniversalTime();$resumeCandidate=[DateTime]::Parse($powerEvidence.latest_resume_utc).ToUniversalTime();if(($sleepCandidate -ge $suspendRequestedUtc.AddSeconds(-5)) -and ($resumeCandidate -gt $sleepCandidate)){break}}}
+ while((Get-Date)-lt$resumeDeadline){Start-Sleep -Seconds 2;$powerEvidence=Get-PowerEvents $preEventWindow;if($powerEvidence.sleep_count -gt 0 -and $powerEvidence.resume_count -gt 0){$sleepCandidate=[DateTime]::Parse($powerEvidence.latest_sleep_utc).ToUniversalTime();$resumeCandidate=[DateTime]::Parse($powerEvidence.latest_resume_utc).ToUniversalTime();if(($sleepCandidate -ge $suspendRequestedUtc.AddSeconds(-5)) -and ($resumeCandidate -gt $sleepCandidate)){break}}}
  if($null -eq $powerEvidence){$powerEvidence=Get-PowerEvents $preEventWindow};$report.evidence.power_events=$powerEvidence
  if($powerEvidence.sleep_count -lt 1){Fail 'genuine-suspend-proof' 'No Kernel-Power Event ID 42 was recorded; actual entry into sleep was not proven.'}
  if($powerEvidence.resume_count -lt 1){Fail 'genuine-resume-proof' 'No Kernel-Power Event ID 107 was recorded; actual resume from sleep was not proven.'}
@@ -64,12 +64,17 @@ namespace UntrappedPower { public static class Sleep { [DllImport("PowrProf.dll"
  if($supervisorProcess.HasExited){Fail 'post-resume-supervisor' 'Supervisor exited across resume.'}
  $afterWorkers=@(Get-WorkerProcesses);if($afterWorkers.Count -lt 2){Fail 'post-resume-redundancy' "Expected two workers after resume; found $($afterWorkers.Count)."}
  $afterAdapters=@(Get-NetAdapter|Where-Object Status -ne 'Unknown'|ForEach-Object{"$($_.Name)|$($_.Status)|$($_.ifIndex)"});if($afterAdapters.Count -ne $beforeAdapters.Count){Fail 'post-resume-adapters' "Adapter topology changed: before=$($beforeAdapters.Count), after=$($afterAdapters.Count)."}
- $missingAdapters=@($beforeAdapters|Where-Object{$_ -notin $afterAdapters});if($missingAdapters.Count -gt 0){Fail 'post-resume-adapter-integrity' "Adapters disappeared or changed identity: $($missingAdapters -join '; ')"}
+ $missingAdapters=@($beforeAdapters|Where-Object{$_ -notin$afterAdapters});if($missingAdapters.Count -gt 0){Fail 'post-resume-adapter-integrity' "Adapters disappeared or changed identity: $($missingAdapters -join '; ')"}
  $report.evidence.post_resume_worker_pids=@($afterWorkers.ProcessId);$report.evidence.post_resume_adapters=$afterAdapters
  Event 'post-resume-state' 'PASS' "Supervisor $($supervisorProcess.Id) remained alive with $($afterWorkers.Count) workers and unchanged adapter topology.";Test-NetworkState 'post-resume'
  $finalConfigHash=(Get-FileHash $ConfigPath -Algorithm SHA256).Hash;if($finalConfigHash -ne $originalConfigHash){Fail 'production-config-integrity' 'Production ultra-mode/config.json changed during the sleep/resume certification.'}
  Event 'production-config-integrity' 'PASS' 'Production ultra-mode/config.json SHA-256 is unchanged from the pre-test snapshot.'
  $report.status='PASS';Event 'sleep-wake-gate' 'PASS' 'Genuine sleep/resume, blocker lifecycle, redundancy, adapter integrity, and post-resume real network enforcement all passed.'
 }catch{$report.status='FAIL';$report.evidence.failure=$_.Exception.Message;Write-Host "FAIL — sleep-wake gate — $($_.Exception.Message)"}
-finally{if($supervisorProcess -and -not $supervisorProcess.HasExited){Stop-Process -Id $supervisorProcess.Id -Force -ErrorAction SilentlyContinue};@(Get-WorkerProcesses)|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue};if($testConfigCreated){Remove-Item $TestConfigPath -Force -ErrorAction SilentlyContinue};$report.finished_utc=[DateTime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 30|Set-Content $ReportPath -Encoding UTF8}
+finally{
+ if($supervisorProcess -and -not $supervisorProcess.HasExited){Stop-Process -Id $supervisorProcess.Id -Force -ErrorAction SilentlyContinue}
+ try{@(Get-WorkerProcesses)|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}catch{}
+ if($testConfigCreated){Remove-Item $TestConfigPath -Force -ErrorAction SilentlyContinue}
+ $report.finished_utc=[DateTime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 30|Set-Content $ReportPath -Encoding UTF8
+}
 if($report.status -ne 'PASS'){exit 1};exit 0
