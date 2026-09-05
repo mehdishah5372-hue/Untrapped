@@ -11,14 +11,14 @@ function Start-Worker([int]$Priority){
   Start-Process -FilePath 'powershell.exe' -ArgumentList $args -PassThru -WindowStyle Hidden
 }
 try {
-  $workers=@(Start-Worker 1000, Start-Worker 999)
+  $workers=@((Start-Worker 1000),(Start-Worker 999))
   Write-Host "SUPERVISOR STARTED workers=$($workers.Id -join ',')"
   while($true){
-    foreach($w in @($workers)){
+    for($i=0;$i -lt $workers.Count;$i++){
+      $w=$workers[$i]
       if($w.HasExited){
-        Write-Host "SUPERVISOR RECOVERY worker=$($w.Id) exit=$($w.ExitCode)"
-        $idx=[array]::IndexOf($workers,$w)
-        $workers[$idx]=Start-Worker (if($idx -eq 0){1000}else{999})
+        Write-Host "SUPERVISOR RECOVERY worker=$($w.Id) slot=$i exit=$($w.ExitCode)"
+        $workers[$i]=Start-Worker (if($i -eq 0){1000}else{999})
       }
     }
     Start-Sleep -Seconds $RestartSeconds
