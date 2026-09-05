@@ -15,5 +15,5 @@ $cases=@(
  @{u="https://evil.youtube.com/watch?v=$id";d="BLOCK"},
  @{u="https://www.youtube.com/watch?v=dQw4w9WgXcQ";d="BLOCK"}
 )
-foreach($c in $cases){$r=Resolve-PolicyDecision $c.u $p;if($r.Decision -cne $c.d){throw "POLICY MISMATCH $($c.u): expected=$($c.d) actual=$($r.Decision)"}}
+foreach($c in $cases){try{$r=Resolve-PolicyDecision $c.u $p;if($r.Decision -cne $c.d){throw "POLICY MISMATCH $($c.u): expected=$($c.d) actual=$($r.Decision)"}}catch{Write-Host "CASE FAIL: $($c.u)";Write-Host $_.Exception.ToString();throw}}
 Write-Host "POLICY ENGINE PASS: $($cases.Count) deterministic cases"
