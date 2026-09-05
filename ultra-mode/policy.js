@@ -15,7 +15,7 @@
       const i = part.indexOf("=");
       const rawKey = i < 0 ? part : part.slice(0, i);
       const rawValue = i < 0 ? "" : part.slice(i + 1);
-      return { key: decodeComponent(rawKey), value: decodeComponent(rawValue) };
+      return { rawKey, rawValue, key: decodeComponent(rawKey), value: decodeComponent(rawValue) };
     });
   }
 
@@ -32,12 +32,7 @@
   function decideYouTubeUrl(input, config) {
     const result = { decision: "BLOCK", reason: "default-deny", url: String(input ?? "") };
     let url;
-    try {
-      url = new URL(String(input));
-    } catch (_) {
-      return { ...result, reason: "invalid-url" };
-    }
-
+    try { url = new URL(String(input)); } catch (_) { return { ...result, reason: "invalid-url" }; }
     if (url.protocol !== "https:") return { ...result, reason: "scheme-not-https" };
     const host = url.hostname.toLowerCase().replace(/\.$/, "");
     if (!YOUTUBE_HOSTS.has(host)) return { ...result, reason: "host-not-allowlisted" };
@@ -50,13 +45,12 @@
     try { pairs = parseQuery(url.search.slice(1)); } catch (_) { return { ...result, reason: "malformed-query" }; }
     const v = pairs.filter((p) => p.key === "v");
     if (v.length !== 1) return { ...result, reason: v.length === 0 ? "missing-lowercase-v" : "duplicate-v" };
+    if (v[0].rawKey !== "v") return { ...result, reason: "encoded-parameter-name" };
+    if (!VIDEO_ID_RE.test(v[0].rawValue)) return { ...result, reason: "encoded-or-invalid-video-id" };
     if (!VIDEO_ID_RE.test(v[0].value)) return { ...result, reason: "invalid-video-id" };
 
-    if (!normaliseConfig(config).allowAdditionalQueryParameters && pairs.length !== 1) {
-      return { ...result, reason: "additional-query-parameters" };
-    }
-
     const policy = normaliseConfig(config);
+    if (!policy.allowAdditionalQueryParameters && pairs.length !== 1) return { ...result, reason: "additional-query-parameters" };
     if (!policy.allowedIds.has(v[0].value)) return { ...result, reason: "video-not-allowlisted" };
     return { decision: "ALLOW", reason: "explicit-video-allowlist", host, path: url.pathname, videoId: v[0].value, url: String(input) };
   }
