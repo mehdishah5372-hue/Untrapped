@@ -43,7 +43,7 @@ for($i=0;$i -lt 30000;$i++){
 $payload=Join-Path $env:TEMP ('untrapped-policy-'+[guid]::NewGuid().ToString('N')+'.json')
 $cases|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $payload -Encoding UTF8
 try{
-  $nodeScript='const fs=require("fs"); const p=require(process.argv[1]); const c=JSON.parse(fs.readFileSync(process.argv[2],"utf8")); for(const x of c){let d; try{d=p.decideYouTubeUrl(x.url,{youtubePolicy:{allowAdditionalQueryParameters:true},allowedYouTubeVideoIds:["AAAAAAAAAAA"]});}catch(e){d={decision:"BLOCK",reason:"policy-evaluation-error"};} process.stdout.write(JSON.stringify({name:x.name,url:x.url,decision:d.decision,reason:d.reason})+"\n");}'
+  $nodeScript='const fs=require(''fs''); const p=require(process.argv[1]); const c=JSON.parse(fs.readFileSync(process.argv[2],''utf8'')); for(const x of c){let d; try{d=p.decideYouTubeUrl(x.url,{youtubePolicy:{allowAdditionalQueryParameters:true},allowedYouTubeVideoIds:[''AAAAAAAAAAA'']});}catch(e){d={decision:''BLOCK'',reason:''policy-evaluation-error''};} process.stdout.write(JSON.stringify({name:x.name,url:x.url,decision:d.decision,reason:d.reason})+''\n'');}'
   $nodeOut=& node -e $nodeScript (Join-Path $Root 'policy.js') $payload
   if($LASTEXITCODE -ne 0){throw 'Node policy engine exited non-zero.'}
   $browser=@($nodeOut|ForEach-Object{$_|ConvertFrom-Json})
