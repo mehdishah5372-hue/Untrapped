@@ -1,15 +1,14 @@
-{
-  "version": 1,
-  "allowedYouTubeUrls": [
-    {
-      "url": "https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en",
-      "reason": "Explicitly permitted video"
-    }
-  ],
-  "policy": {
-    "allowOnlyListedWatchVideos": true,
-    "allowHarmlessQueryParameterReordering": true,
-    "allowFragments": true,
-    "allowTrackingParameters": true
+[
+  {
+    "id": 200,
+    "priority": 10,
+    "action": {"type": "block"},
+    "condition": {"urlFilter": "||youtube.com/", "resourceTypes": ["main_frame", "sub_frame"]}
+  },
+  {
+    "id": 201,
+    "priority": 10,
+    "action": {"type": "block"},
+    "condition": {"urlFilter": "||youtu.be/", "resourceTypes": ["main_frame", "sub_frame"]}
   }
-}
+]
