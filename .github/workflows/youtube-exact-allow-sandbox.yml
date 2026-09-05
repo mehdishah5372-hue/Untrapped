@@ -199,6 +199,11 @@ jobs:
           foreach($x in $fake){$r=@(Force-DiagnosticScan -Source 'adversarial-sandbox' -Artifact 'fake-error' -Lines @($x) -ExitCode 1 -HttpStatus 0 -Stage 'adversarial');$out+=[pscustomobject]@{input=$x;count=$r.Count;records=@($r)}}
           $out|ConvertTo-Json -Depth 10|Set-Content "$env:TEMP\adversarial-results.json" -Encoding UTF8
           Write-Host '=== UPGRADED CHECKER ADVERSARIAL RESULTS ===';$out|ForEach-Object{Write-Host ("count={0} input={1}" -f $_.count,$_.input)}
+          $mustBeIgnored=@('Narrative: the previous test reported a failure, but this line is only context.','All systems operational.','WARNING: retrying connection.')
+          foreach($x in $mustBeIgnored){$hit=@($out|Where-Object input -eq $x);if(-not $hit -or $hit[0].count -ne 0){throw "CHECKER FALSE POSITIVE: $x"}}
+          $mustBeDetected=@('The term foo is not recognized as the name of a cmdlet, function, script file, or operable program.','ParserError: Unexpected token } in expression or statement.','[ERROR] WinDivert failed to initialize.','ERROR: HTTP 500 from remote endpoint.','Request timed out after 30 seconds.','Access denied while opening device.','Exception: System.InvalidOperationException: synthetic test failure.','FATAL: synthetic kernel failure.','404 Not Found','409 Conflict','429 Too Many Requests')
+          foreach($x in $mustBeDetected){$hit=@($out|Where-Object input -eq $x);if(-not $hit -or $hit[0].count -ne 1){throw "CHECKER MISSED CONCRETE ERROR: $x"}}
+          Write-Host 'ADVERSARIAL CHECKER SELECTIVITY PASS: 3 narrative/benign lines ignored; 11 concrete diagnostics retained.'
 
 on:
   push:
