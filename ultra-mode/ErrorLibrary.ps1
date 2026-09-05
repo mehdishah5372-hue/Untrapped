@@ -115,16 +115,17 @@ function Force-DiagnosticScan {
     # Objective failure evidence is authoritative. This intentionally preserves the
     # baseline's reporter behaviour: when the process/HTTP request failed, every
     # non-empty captured line remains reportable rather than silently disappearing.
-    if($ExitCode -ne 0 -or $HttpStatus -ge 400){
-        $selected=$nonEmpty
-    } else {
-        # Force-first: inspect the entire batch before selecting anything. Strong,
-        # structured diagnostics win; narrative references to errors do not.
-        $ranked=@($nonEmpty|ForEach-Object{
-            [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_)}
-        }|Where-Object{$_.Score -ge 50}|Sort-Object Score -Descending)
-        $selected=@($ranked|ForEach-Object{$_.Text})
-    }
+    # Objective failure metadata is evidence that the operation failed, but it
+    # is not itself evidence that every captured line is an error.  Score each
+    # line even when ExitCode/HTTP status is non-success so narrative diagnostics
+    # cannot become reporter records merely because the process failed.
+    $ranked=@($nonEmpty|ForEach-Object{
+        [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_)}
+    }|Where-Object{$_.Score -ge 50}|Sort-Object Score -Descending)
+    $selected=@($ranked|ForEach-Object{$_.Text})
+    # Never synthesize a record from failure metadata when there is no concrete
+    # diagnostic text.
+    if($nonEmpty.Count -eq 0){$selected=@()}
 
     foreach($text in $selected){
         $category=Classify-ErrorText $text
