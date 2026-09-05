@@ -37,8 +37,7 @@ jobs:
       - name: YouTube JSON and PowerShell policy gate
         shell: powershell
         run: |
-          & ./ultra-mode/youtube-policy-powershell-test.ps1
-          if($LASTEXITCODE -ne 0){throw 'YouTube PowerShell policy contract failed'}
+          try { & ./ultra-mode/youtube-policy-powershell-test.ps1; if($LASTEXITCODE -ne 0){throw 'script exit code nonzero'} } catch { Write-Host "YOUTUBE POLICY ERROR: $($_.Exception.Message)"; Write-Host $_.ScriptStackTrace; throw }
 
       - name: Pinned baseline reporter contract on Windows VM
         shell: powershell
