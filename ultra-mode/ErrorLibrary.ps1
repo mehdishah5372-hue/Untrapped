@@ -123,6 +123,12 @@ function Force-DiagnosticScan {
         [pscustomobject]@{Text=$_;Score=(Get-CheckerEvidenceScore $_)}
     }|Where-Object{$_.Score -ge 50}|Sort-Object Score -Descending)
     $selected=@($ranked|ForEach-Object{$_.Text})
+    # An HTTP 4xx/5xx status is itself concrete failure evidence. If the body
+    # lacks an error keyword, retain only the first non-empty response line;
+    # process exit failure alone is never sufficient.
+    if($selected.Count -eq 0 -and $HttpStatus -ge 400 -and $nonEmpty.Count -gt 0){
+        $selected=@($nonEmpty | Select-Object -First 1)
+    }
     # Never synthesize a record from failure metadata when there is no concrete
     # diagnostic text.
     if($nonEmpty.Count -eq 0){$selected=@()}
