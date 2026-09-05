@@ -1,8 +1,9 @@
 (() => {
   "use strict";
 
-  const RULES_URL = chrome.runtime.getURL("youtube-rules.json");
-  const ALLOWED_VIDEO_ID = "2wgg7KtzTrU";
+  const RULES_URL = chrome.runtime.getURL("youtube-allowlist.json");
+  let allowedVideoIds = new Set();
+  let rulesLoaded = false;
   const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com"]);
 
   function isYouTubeHost(host) {
@@ -15,7 +16,7 @@
       const u = new URL(url);
       if (!isYouTubeHost(u.hostname) || u.pathname !== "/watch") return null;
       const ids = u.searchParams.getAll("v");
-      if (ids.length !== 1 || ids[0] !== ALLOWED_VIDEO_ID) return null;
+      if (!rulesLoaded || ids.length !== 1 || !allowedVideoIds.has(ids[0])) return null;
       return ids[0];
     } catch (_) {
       return null;
@@ -25,9 +26,7 @@
   function isAllowedYouTubeUrl(url) {
     try {
       const u = new URL(url);
-      return u.protocol === "https:" &&
-        isYouTubeHost(u.hostname) &&
-        getVideoId(u.href) === ALLOWED_VIDEO_ID;
+      return u.protocol === "https:" && isYouTubeHost(u.hostname) && getVideoId(u.href) !== null;
     } catch (_) {
       return false;
     }
@@ -39,8 +38,8 @@
       : null;
   }
 
-  async function loadRules() { const r = await fetch(RULES_URL, {cache: "no-store"}); if (!r.ok) throw new Error("youtube-rules.json unavailable"); return await r.json(); }\n\n  window.UntrappedYouTubePolicy = Object.freeze({
-    ALLOWED_VIDEO_ID,
+  async function loadRules() { const r = await fetch(RULES_URL, {cache: "no-store"}); if (!r.ok) throw new Error("youtube-allowlist.json unavailable"); const rules = await r.json(); if (rules.version !== 1) throw new Error("Unsupported allowlist version"); const entries = Array.isArray(rules.allowedYouTubeUrls) ? rules.allowedYouTubeUrls : []; allowedVideoIds = new Set(entries.map(e => { const u = new URL(e.url); if (u.protocol !== "https:" || !isYouTubeHost(u.hostname) || u.pathname !== "/watch" || u.searchParams.getAll("v").length !== 1) throw new Error("Invalid allowlist entry"); return u.searchParams.get("v"); })); rulesLoaded = true; return rules; }\n\n  window.UntrappedYouTubePolicy = Object.freeze({
+    ALLOWED_VIDEO_ID: null,
     isYouTubeHost,
     getVideoId,
     isAllowedYouTubeUrl,
