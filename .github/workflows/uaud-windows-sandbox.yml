@@ -34,6 +34,12 @@ jobs:
             Write-Host "SYNTAX PASS: $($f.FullName)"
           }
 
+      - name: YouTube JSON and PowerShell policy gate
+        shell: powershell
+        run: |
+          & ./ultra-mode/youtube-policy-powershell-test.ps1
+          if($LASTEXITCODE -ne 0){throw 'YouTube PowerShell policy contract failed'}
+
       - name: Pinned baseline reporter contract on Windows VM
         shell: powershell
         run: |
