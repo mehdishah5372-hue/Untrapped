@@ -8,7 +8,11 @@ permissions:
   contents: read
 jobs:
   compatibility:
-    runs-on: [self-hosted, windows, osblocker-cert-vm]
+    # GitHub's public-repository Windows VM is a real disposable Windows VM
+    # and is sufficient for this sequential 1.0.0 -> 1.0.1 WinDivert test.
+    # Sleep/wake remains a separate hard gate because suspending a hosted
+    # runner destroys the CI control plane.
+    runs-on: windows-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
