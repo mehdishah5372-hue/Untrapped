@@ -62,7 +62,7 @@ jobs:
           )
           foreach($c in $cases){
             $u=[Uri]$c.url;$m=[regex]::Matches($u.Query.TrimStart('?'),'(?:^|&)v=([^&]*)');$ok=$false
-            if($u.Scheme -eq 'https' -and $u.Host -match '^(www\.)?(m\.)?youtube\.com$' -and $u.AbsolutePath -eq '/watch' -and $m.Count -eq 1 -and $ids -contains $m[0].Groups[1].Value){$ok=$true}
+            if($u.Scheme -eq 'https' -and $u.Host -match '^(www\.)?(m\.)?youtube\.com$' -and $u.AbsolutePath -eq '/watch' -and $m.Count -eq 1 -and $ids -ccontains $m[0].Groups[1].Value){$ok=$true}
             if($ok -ne $c.allow){throw "Policy mismatch: $($c.url) expected=$($c.allow) actual=$ok"}
           }
           Write-Host "YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS ($($entries.Count) allowed URL(s), $($cases.Count) decision cases)"
