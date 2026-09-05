@@ -66,6 +66,14 @@ jobs:
             if($ok -ne $c.allow){throw "Policy mismatch: $($c.url) expected=$($c.allow) actual=$ok"}
           }
           Write-Host "YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS ($($entries.Count) allowed URL(s), $($cases.Count) decision cases)"
+      - name: Exhaustive PowerShell YouTube policy stress test
+        shell: powershell
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\ultra-mode\youtube-policy-powershell-exhaustive.ps1"
+          if($LASTEXITCODE -ne 0){throw "Exhaustive PowerShell policy test failed: $LASTEXITCODE"}
+
       - name: Pinned baseline reporter contract on Windows VM
         shell: powershell
         run: |
