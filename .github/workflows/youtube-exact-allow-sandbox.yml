@@ -199,6 +199,206 @@ jobs:
           foreach($x in $fake){$r=@(Force-DiagnosticScan -Source 'adversarial-sandbox' -Artifact 'fake-error' -Lines @($x) -ExitCode 1 -HttpStatus 0 -Stage 'adversarial');$out+=[pscustomobject]@{input=$x;count=$r.Count;records=@($r)}}
           $out|ConvertTo-Json -Depth 10|Set-Content "$env:TEMP\adversarial-results.json" -Encoding UTF8
           Write-Host '=== UPGRADED CHECKER ADVERSARIAL RESULTS ===';$out|ForEach-Object{Write-Host ("count={0} input={1}" -f $_.count,$_.input)}
+
+on:
+  push:
+    branches: [youtube-exact-allow-sandbox]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-integration:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Checkout sandbox branch
+        uses: actions/checkout@v4
+
+      - name: PowerShell syntax gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @('./ultra-mode/packet-filter.ps1','./ultra-mode/sandbox-behaviour.ps1') | ForEach-Object {
+            $tokens=$null; $errors=$null
+            if(-not (Test-Path $_)){ throw "Missing test file: $_" }
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $_).Path,[ref]$tokens,[ref]$errors)
+            if(@($errors).Count){ throw "Syntax failure: $_" }
+          }
+          Write-Host 'POWERSHELL SYNTAX PASS'
+
+      - name: Exact URL policy corpus
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Get-Content ./youtube-policy.js -Raw
+          # Validate the policy with a small PowerShell model equivalent; the
+          # authoritative browser rule is tested below by parsing its regex.
+          $rules = Get-Content ./youtube-rules.json -Raw | ConvertFrom-Json
+          $allow = $rules | Where-Object id -eq 100
+          $rx = [regex]$allow.condition.regexFilter
+          $allowed = @(
+            'https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en',
+            'https://www.youtube.com/watch?vl=en&v=2wgg7KtzTrU&utm_source=x',
+            'https://youtube.com/watch?utm_campaign=x&v=2wgg7KtzTrU&t=90'
+          )
+          $blocked = @(
+            'https://www.youtube.com/watch?v=OTHER_VIDEO',
+            'https://www.youtube.com/watch?v=2wgg7KtzTrU&v=OTHER_VIDEO',
+            'https://www.youtube.com/watch?v=2wgg7KtzTrU&v=2wgg7KtzTrU',
+            'https://www.youtube.com/shorts/2wgg7KtzTrU',
+            'https://www.youtube.com/results?search_query=2wgg7KtzTrU',
+            'https://www.youtube.com/channel/UC123',
+            'https://www.youtube.com/@channel',
+            'https://youtu.be/2wgg7KtzTrU'
+          )
+          foreach($u in $allowed){if(-not $rx.IsMatch($u)){throw "ALLOW REGRESSION: $u"}}
+          foreach($u in $blocked){if($rx.IsMatch($u)){throw "BLOCK REGRESSION: $u"}}
+          Write-Host 'EXACT URL REGRESSION PASS'
+
+      - name: Browser-only OS exclusion test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Normalize-Domains($domains) {
+            @($domains | Where-Object { $_ -and $_.ToString() -notmatch '[\s#]' } | ForEach-Object { $_.ToString().ToLowerInvariant().TrimEnd('.') })
+          }
+          function Get-OsBlockDomains($domains,$browserOnlyDomains) {
+            $browser=[System.Collections.Generic.HashSet[string]]::new([string[]](Normalize-Domains $browserOnlyDomains))
+            @(Normalize-Domains $domains | Where-Object { -not $browser.Contains([string]$_) })
+          }
+          $x=@(Get-OsBlockDomains @('youtube.com','chatgpt.com','crushon.ai') @('youtube.com'))
+          if($x -contains 'youtube.com'){throw 'YouTube leaked into OS IP policy'}
+          if($x -notcontains 'chatgpt.com'){throw 'chatgpt.com unexpectedly excluded'}
+          if($x -notcontains 'crushon.ai'){throw 'crushon.ai unexpectedly excluded'}
+          Write-Host 'OS POLICY EXCLUSION PASS'
+
+      - name: DNR JSON structural validation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rules = Get-Content ./youtube-rules.json -Raw | ConvertFrom-Json
+          if(@($rules).Count -ne 3){throw 'Unexpected rule count'}
+          if(($rules | Where-Object id -eq 100).priority -le ($rules | Where-Object id -eq 200).priority){throw 'Allow rule priority is not higher'}
+          Write-Host 'DNR STRUCTURE PASS'
+
+      - name: Real WinDivert kernel integration smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip="$env:TEMP\WinDivert.zip"
+          Invoke-WebRequest -Uri 'https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip' -OutFile $zip
+          $expected='c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2'
+          $expanded="$env:TEMP\WinDivert"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          $wd=Get-ChildItem $expanded -Recurse -Filter WinDivert.dll | Where-Object FullName -match '\\x64\\' | Select-Object -First 1
+          $sys=Join-Path $wd.Directory.FullName 'WinDivert64.sys'
+          if(-not $wd -or -not (Test-Path $sys)){throw 'WinDivert x64 runtime files missing'}
+          if((Get-FileHash $wd.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw 'WinDivert.dll SHA256 mismatch'}
+          Copy-Item $wd.FullName ./ultra-mode/WinDivert.dll -Force
+          Copy-Item $sys ./ultra-mode/WinDivert64.sys -Force
+          $testRoot="$env:TEMP\untrapped-wd-test"
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          Copy-Item ./ultra-mode/packet-filter.ps1 "$testRoot\packet-filter.ps1"
+          Copy-Item ./ultra-mode/WinDivert.dll "$testRoot\WinDivert.dll"
+          Copy-Item ./ultra-mode/WinDivert64.sys "$testRoot\WinDivert64.sys"
+          # Use an isolated test policy containing a non-YouTube target so the
+          # runner's own YouTube exception policy remains intact.
+          @'
+          {
+            "enabled": true,
+            "start": "00:00",
+            "end": "23:59",
+            "domains": ["example.com"],
+            "alwaysBlockedDomains": [],
+            "alwaysAllowedDomains": [],
+            "browserOnlyDomains": ["youtube.com"]
+          }
+          '@ | Set-Content "$testRoot\config.json" -Encoding UTF8
+          $p=Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',"$testRoot\packet-filter.ps1" -WorkingDirectory $testRoot -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 6
+          if($p.HasExited){throw "WinDivert smoke test exited early with code $($p.ExitCode)"}
+          $p.Kill()
+          Write-Host 'WINDIVERT KERNEL SMOKE PASS: elevated Windows runner opened the modified filter process.'
+          Write-Host 'WINDIVERT NOTE: YouTube is intentionally browser-only in this architecture.'
+
+      - name: 1000 real-video exact-allow stress test
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --disable-pip-version-check -q yt-dlp
+          $queries=@('music','science','math','history','gaming','technology','nature','documentary','cooking','sports','news','education','programming','football','basketball','space','cars','travel','art','language','engineering','psychology','geography','physics','chemistry','biology','movies','comedy','podcasts','tutorial')
+          $items=@()
+          foreach($q in $queries){
+            $raw=& python -m yt_dlp --flat-playlist --dump-single-json --playlist-end 100 --no-warnings "ytsearch100:$q" 2>$null
+            if($LASTEXITCODE -eq 0 -and $raw){try{$j=$raw|ConvertFrom-Json;foreach($e in @($j.entries)){if($e.id -and $e.ie_key -match 'Youtube'){$items+=[pscustomobject]@{id=[string]$e.id;query=$q}}}}catch{}}
+            if(@($items|Sort-Object id -Unique).Count -ge 1000){break}
+          }
+          $videos=@($items|Sort-Object id -Unique|Where-Object id -ne '2wgg7KtzTrU'|Select-Object -First 1000)
+          if($videos.Count -lt 1000){throw "Only collected $($videos.Count) real YouTube videos"}
+          $rules=Get-Content ./youtube-rules.json -Raw|ConvertFrom-Json
+          $rx=[regex](($rules|Where-Object id -eq 100).condition.regexFilter)
+          $blocked=0;$escaped=0
+          foreach($v in $videos){
+            $forms=@(
+              "https://m.youtube.com/watch?vl=en&v=$($v.id)&utm_source=stress",
+              "https://www.youtube.com/watch?v=$($v.id)&hl=en&utm_campaign=stress",
+              "https://youtube.com/watch?utm_medium=stress&v=$($v.id)"
+            )
+            foreach($u in $forms){if($rx.IsMatch($u)){$escaped++}else{$blocked++}}
+          }
+          Write-Host "1000 REAL VIDEO IDS x 3 URL FORMS: tested=$($videos.Count*3) blocked=$blocked escaped=$escaped"
+          if($escaped -ne 0){throw "Non-allowed real video matched the allow rule: $escaped escapes"}
+          if($blocked -ne 3000){throw "Expected 3000 blocked URL decisions; got $blocked"}
+          # Live browser verification against 30 real IDs spread through the corpus.
+          $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")|Where-Object{Test-Path $_}|Select-Object -First 1
+          $sample=@(0,33,66,99,132,165,198,231,264,297,330,363,396,429,462,495,528,561,594,627,660,693,726,759,792,825,858,891,924,957)|ForEach-Object{$videos[$_]}
+          $liveFail=0
+          foreach($v in $sample){
+            $profile="$env:TEMP\untrapped-live-$([guid]::NewGuid().ToString('N'))";$out="$env:TEMP\untrapped-live-$([guid]::NewGuid().ToString('N')).html"
+            & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir=$profile --load-extension="$PWD" --dump-dom "https://www.youtube.com/watch?v=$($v.id)" *> $out
+            $body=if(Test-Path $out){Get-Content $out -Raw}else{''}
+            if($body -notmatch 'YouTube is blocked'){$liveFail++;Write-Host "LIVE ESCAPE $($v.id)"}
+          }
+          Write-Host "LIVE BROWSER SAMPLE: tested=$($sample.Count) blocked=$($sample.Count-$liveFail) escaped=$liveFail"
+          if($liveFail -ne 0){throw "Live browser sample had $liveFail escapes"}
+          Write-Host '1000/1000 REAL VIDEO IDS: all non-allowed IDs rejected by the exact-allow rule; live browser sample also blocked.'
+
+      - name: Fetch and compare immutable canonical reporter
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference='Stop'
+          $url='https://untrapped-update-middleman-000-999-production.up.railway.app/v1/artifact/ultra-mode/ErrorLibrary.ps1?ci=' + [DateTime]::UtcNow.Ticks
+          $canonical="$env:TEMP\ErrorLibrary-canonical.ps1"
+          Invoke-WebRequest -Uri $url -Headers @{'User-Agent'='UAUD-CANON-COMPARE/1.0'} -UseBasicParsing -OutFile $canonical
+          if(-not(Test-Path $canonical)){throw 'Canonical reporter download failed'}
+          $text=Get-Content $canonical -Raw
+          if($text -notmatch '\$ErrorLibraryVersion\s*=\s*''1\.0\.0|OSblocker 1\.0\.0'){throw 'Downloaded artifact is not identified as OSblocker 1.0.0'}
+          $sha=(Get-FileHash $canonical -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "CANONICAL REPORTER SHA256=$sha"
+          $localSha=(Get-FileHash ./ultra-mode/ErrorLibrary.ps1 -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "SANDBOX REPORTER SHA256=$localSha"
+          $canonVersion=[regex]::Match($text,'\$ErrorLibraryVersion\s*=\s*''([^'']+)''').Groups[1].Value;if($canonVersion -ne '1.0.0'){throw "Canonical version mismatch: $canonVersion"}
+          $tmp1="$env:TEMP\canon-record.jsonl";$tmp2="$env:TEMP\sandbox-record.jsonl"
+          & powershell -NoProfile -Command ". '$canonical'; `$ErrorLibraryPath='$tmp1'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
+          & powershell -NoProfile -Command ". './ultra-mode/ErrorLibrary.ps1'; `$ErrorLibraryPath='$tmp2'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
+          $a=(Get-Content $tmp1 -Raw|ConvertFrom-Json);$b=(Get-Content $tmp2 -Raw|ConvertFrom-Json)
+          $fields='schema','stream','source','artifact','category','fingerprint','text','exit_code','http_status','candidate_hash','previous_candidate_hash','attempt','repair_action','syntax_result','context'
+          foreach($field in $fields){if([string]$a.$field -ne [string]$b.$field){throw "REPORTER FIELD DIVERGENCE: $field canonical=[$($a.$field)] sandbox=[$($b.$field)]"}}
+          Write-Host 'CANONICAL REPORTER CONTRACT: PASS'
+          Write-Host 'UAUD/UARD/middleman-facing reporter uses the same Save-ErrorEvent schema; dynamic timestamp intentionally excluded.'
+      - name: Canon reporter vs upgraded checker adversarial contract test
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference='Stop'
+          . ./ultra-mode/ErrorLibrary.ps1
+          $fake=@('The term foo is not recognized as the name of a cmdlet, function, script file, or operable program.','ParserError: Unexpected token } in expression or statement.','[ERROR] WinDivert failed to initialize.','ERROR: HTTP 500 from remote endpoint.','Request timed out after 30 seconds.','Access denied while opening device.','WARNING: retrying connection.','Narrative: the previous test reported a failure, but this line is only context.','All systems operational.','Exception: System.InvalidOperationException: synthetic test failure.','FATAL: synthetic kernel failure.','404 Not Found','409 Conflict','429 Too Many Requests')
+          $out=@()
+          foreach($x in $fake){$r=@(Force-DiagnosticScan -Source 'adversarial-sandbox' -Artifact 'fake-error' -Lines @($x) -ExitCode 1 -HttpStatus 0 -Stage 'adversarial');$out+=[pscustomobject]@{input=$x;count=$r.Count;records=@($r)}}
+          $out|ConvertTo-Json -Depth 10|Set-Content "$env:TEMP\adversarial-results.json" -Encoding UTF8
+          Write-Host '=== UPGRADED CHECKER ADVERSARIAL RESULTS ===';$out|ForEach-Object{Write-Host ("count={0} input={1}" -f $_.count,$_.input)}
           $canon=Join-Path $env:TEMP 'canonical-reporter.ps1'
           if(Test-Path ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1){Copy-Item ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1 $canon -Force}elseif(Test-Path ./canon/ErrorLibrary.ps1){Copy-Item ./canon/ErrorLibrary.ps1 $canon -Force}else{throw 'Canonical ErrorLibrary.ps1 not present in sandbox checkout'}
           $sandboxPath=(Resolve-Path ./ultra-mode/ErrorLibrary.ps1).Path
