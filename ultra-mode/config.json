@@ -19,9 +19,5 @@
     "windowsmcp.io",
     "pypi.org",
     "files.pythonhosted.org"
-  ],
-  "youtubePolicy": {
-    "allowAdditionalQueryParameters": true
-  },
-  "allowedYouTubeVideoIds": []
+  ]
 }
