@@ -70,8 +70,14 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          & ./ultra-mode/policy-engine-test.ps1
-          if($LASTEXITCODE -ne 0){throw 'Policy engine regression failed'}
+          . ./ultra-mode/PolicyEngine.ps1
+          $p=Read-PolicyConfig
+          $id=[string](@($p.AllowedVideoIds)[0])
+          $a=Resolve-PolicyDecision -Url "https://m.youtube.com/watch?v=$id&vl=en" -Policy $p
+          $b=Resolve-PolicyDecision -Url "https://www.youtube.com/watch?V=$id" -Policy $p
+          $c=Resolve-PolicyDecision -Url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" -Policy $p
+          if($a.Decision -cne 'ALLOW' -or $b.Decision -cne 'BLOCK' -or $c.Decision -cne 'BLOCK'){throw "Policy engine mismatch: $($a.Decision),$($b.Decision),$($c.Decision)"}
+          Write-Host 'POLICY ENGINE PASS: deterministic shared-engine cases'
 
       - name: Exhaustive PowerShell YouTube policy stress test
         shell: powershell
