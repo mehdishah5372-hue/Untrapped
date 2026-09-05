@@ -1,0 +1,26 @@
+name: OSblocker 1.0.0 to 1.0.1 OS compatibility
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - certification/os-response-hard-gate
+permissions:
+  contents: read
+jobs:
+  compatibility:
+    runs-on: [self-hosted, windows, osblocker-cert-vm]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run 1.0.0 to 1.0.1 OS compatibility gate
+        shell: powershell
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\osblocker-1.0.0-compatibility-certification.ps1"'
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osblocker-1.0.0-compatibility-${{ github.run_id }}
+          path: ultra-mode/osblocker-1.0.0-compatibility-report.json
+          if-no-files-found: warn
