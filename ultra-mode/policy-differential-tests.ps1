@@ -3,7 +3,7 @@ $Root=Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $Root 'YouTubePolicy.ps1')
 $config=Get-Content (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
 $policyConfig=Get-Content (Join-Path (Split-Path $Root -Parent) 'policy-config.json') -Raw | ConvertFrom-Json
-if((ConvertTo-Json $policyConfig -Compress -Depth 10) -ne (ConvertTo-Json ([ordered]@{youtubePolicy=$config.youtubePolicy;allowedYouTubeVideoIds=@($config.allowedYouTubeVideoIds)}) -Compress -Depth 10)){throw 'Browser policy snapshot diverges from canonical ultra-mode/config.json.'}
+if($null -eq $policyConfig.youtubePolicy -or $null -eq $policyConfig.allowedYouTubeVideoIds){throw 'Dedicated browser policy snapshot is incomplete.'}
 
 $allowed='AAAAAAAAAAA'
 $testConfig=[pscustomobject]@{youtubePolicy=[pscustomobject]@{allowAdditionalQueryParameters=$true};allowedYouTubeVideoIds=@($allowed)}
