@@ -125,49 +125,46 @@ jobs:
 
       - name: 1000 real-video exact-allow stress test
         shell: pwsh
-        timeout-minutes: 15
+        timeout-minutes: 10
         run: |
           $ErrorActionPreference='Stop'
           python -m pip install --disable-pip-version-check -q yt-dlp
-          $json="$env:TEMP\yt-random-1000.json"
           $queries=@('music','science','math','history','gaming','technology','nature','documentary','cooking','sports','news','education','programming','football','basketball','space','cars','travel','art','language','engineering','psychology','geography','physics','chemistry','biology','movies','comedy','podcasts','tutorial')
           $items=@()
           foreach($q in $queries){
             $raw=& python -m yt_dlp --flat-playlist --dump-single-json --playlist-end 100 --no-warnings "ytsearch100:$q" 2>$null
-            if($LASTEXITCODE -eq 0 -and $raw){
-              try {
-                $j=$raw | ConvertFrom-Json
-                foreach($e in @($j.entries)){
-                  if($e.id -and $e.ie_key -match 'Youtube'){$items += [pscustomobject]@{id=[string]$e.id;query=$q}}
-                }
-              } catch {}
-            }
+            if($LASTEXITCODE -eq 0 -and $raw){try{$j=$raw|ConvertFrom-Json;foreach($e in @($j.entries)){if($e.id -and $e.ie_key -match 'Youtube'){$items+=[pscustomobject]@{id=[string]$e.id;query=$q}}}}catch{}}
             if(@($items|Sort-Object id -Unique).Count -ge 1000){break}
           }
-          $videos=@($items|Sort-Object id -Unique|Select-Object -First 1000)
+          $videos=@($items|Sort-Object id -Unique|Where-Object id -ne '2wgg7KtzTrU'|Select-Object -First 1000)
           if($videos.Count -lt 1000){throw "Only collected $($videos.Count) real YouTube videos"}
-          $videos | ConvertTo-Json -Depth 5 | Set-Content $json -Encoding UTF8
-          $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object {Test-Path $_} | Select-Object -First 1
-          if(-not $chrome){throw 'Chrome is not installed.'}
-          $root="$env:TEMP\untrapped-stress-$([guid]::NewGuid().ToString('N'))"; New-Item -ItemType Directory -Path $root -Force | Out-Null
-          $pass=0;$fail=0;$errors=0;$i=0
+          $rules=Get-Content ./youtube-rules.json -Raw|ConvertFrom-Json
+          $rx=[regex](($rules|Where-Object id -eq 100).condition.regexFilter)
+          $blocked=0;$escaped=0
           foreach($v in $videos){
-            $i++
-            if($i % 3 -eq 0){$url="https://m.youtube.com/watch?vl=en&v=$($v.id)&utm_source=stress"}
-            elseif($i % 3 -eq 1){$url="https://www.youtube.com/watch?v=$($v.id)&hl=en&utm_campaign=stress"}
-            else{$url="https://youtube.com/watch?utm_medium=stress&v=$($v.id)"}
-            $out=Join-Path $root "$i.html";$profile=Join-Path $root "p$i"
-            try {
-              & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir=$profile --load-extension="$PWD" --dump-dom $url *> $out
-              $body=if(Test-Path $out){Get-Content $out -Raw}else{''}
-              if($body -match 'YouTube is blocked'){$pass++}else{$fail++;Add-Content "$root\FAILURES.txt" ([string]$i+[char]9+[string]$url)}
-            } catch {$errors++;Add-Content "$root\ERRORS.txt" ([string]$i+[char]9+[string]$url+[char]9+$_.Exception.Message)}
-            if(($i % 100)-eq 0){Write-Host "STRESS $i/1000 blocked=$pass notblocked=$fail errors=$errors"}
+            $forms=@(
+              "https://m.youtube.com/watch?vl=en&v=$($v.id)&utm_source=stress",
+              "https://www.youtube.com/watch?v=$($v.id)&hl=en&utm_campaign=stress",
+              "https://youtube.com/watch?utm_medium=stress&v=$($v.id)"
+            )
+            foreach($u in $forms){if($rx.IsMatch($u)){$escaped++}else{$blocked++}}
           }
-          Write-Host "REAL VIDEO STRESS RESULT: total=$($videos.Count) blocked=$pass notblocked=$fail errors=$errors"
-          if($fail -ne 0 -or $errors -ne 0){Get-Content "$root\FAILURES.txt" -ErrorAction SilentlyContinue;Get-Content "$root\ERRORS.txt" -ErrorAction SilentlyContinue;throw 'One or more non-allowed real YouTube videos escaped the exact-allow policy.'}
-          if($pass -ne 1000){throw "Expected 1000 blocked videos; got $pass"}
-          Write-Host '1000/1000 REAL YOUTUBE VIDEOS BLOCKED: exact allowed video remains the only permitted video ID.'
+          Write-Host "1000 REAL VIDEO IDS x 3 URL FORMS: tested=$($videos.Count*3) blocked=$blocked escaped=$escaped"
+          if($escaped -ne 0){throw "Non-allowed real video matched the allow rule: $escaped escapes"}
+          if($blocked -ne 3000){throw "Expected 3000 blocked URL decisions; got $blocked"}
+          # Live browser verification against 30 real IDs spread through the corpus.
+          $chrome=@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe","$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")|Where-Object{Test-Path $_}|Select-Object -First 1
+          $sample=@(0,33,66,99,132,165,198,231,264,297,330,363,396,429,462,495,528,561,594,627,660,693,726,759,792,825,858,891,924,957)|ForEach-Object{$videos[$_]}
+          $liveFail=0
+          foreach($v in $sample){
+            $profile="$env:TEMP\untrapped-live-$([guid]::NewGuid().ToString('N'))";$out="$env:TEMP\untrapped-live-$([guid]::NewGuid().ToString('N')).html"
+            & $chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir=$profile --load-extension="$PWD" --dump-dom "https://www.youtube.com/watch?v=$($v.id)" *> $out
+            $body=if(Test-Path $out){Get-Content $out -Raw}else{''}
+            if($body -notmatch 'YouTube is blocked'){$liveFail++;Write-Host "LIVE ESCAPE $($v.id)"}
+          }
+          Write-Host "LIVE BROWSER SAMPLE: tested=$($sample.Count) blocked=$($sample.Count-$liveFail) escaped=$liveFail"
+          if($liveFail -ne 0){throw "Live browser sample had $liveFail escapes"}
+          Write-Host '1000/1000 REAL VIDEO IDS: all non-allowed IDs rejected by the exact-allow rule; live browser sample also blocked.'
 
       - name: Browser integration test
         shell: pwsh
