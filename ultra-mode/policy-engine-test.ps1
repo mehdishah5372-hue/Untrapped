@@ -1,6 +1,6 @@
 $ErrorActionPreference="Stop"
 . (Join-Path $PSScriptRoot "PolicyEngine.ps1")
-$p=Read-PolicyConfig
+Write-Host 'Loading PolicyEngine'; $p=Read-PolicyConfig; Write-Host "Loaded IDs=$($p.AllowedVideoIds.Count)"
 if($p.AllowedVideoIds.Count -lt 1){throw "No allowlisted IDs"}
 $id=@($p.AllowedVideoIds)[0]
 $cases=@(
