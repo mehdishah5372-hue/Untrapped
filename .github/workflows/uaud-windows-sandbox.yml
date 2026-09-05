@@ -2,7 +2,7 @@ name: UAUD Windows certification
 
 on:
   push:
-    branches: [main]
+    branches: [main, certification/os-response-hard-gate]
   pull_request:
     branches: [main]
   workflow_dispatch:
