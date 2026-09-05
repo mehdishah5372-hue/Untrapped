@@ -1,0 +1,22 @@
+name: YouTube allowlist updater certification
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  updater-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell syntax
+        shell: powershell
+        run: |
+          $e=$null;$t=$null;[void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ultra-mode\update-youtube-allowlist.ps1",[ref]$t,[ref]$e);if(@($e).Count){throw "Updater syntax failed: $($e[0].Message)"}
+      - name: Functional updater certification
+        shell: powershell
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\test-youtube-allowlist-updater.ps1"'

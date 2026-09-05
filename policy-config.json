@@ -1,0 +1,6 @@
+{
+  "youtubePolicy": {
+    "allowAdditionalQueryParameters": true
+  },
+  "allowedYouTubeVideoIds": []
+}

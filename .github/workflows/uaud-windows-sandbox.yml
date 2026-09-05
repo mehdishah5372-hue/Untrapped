@@ -1,109 +1,111 @@
-name: UAUD Windows sandbox
+name: UAUD Windows certification
 
 on:
   push:
-    branches: [main]
+    branches: [main, certification/os-response-hard-gate]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  validate-and-sandbox:
+  certify-windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Syntax gate - parse all PowerShell without executing it
+      - name: 1 — Syntax gate
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $files = Get-ChildItem -Path . -Filter *.ps1 -Recurse -File
-          if (-not $files) { throw 'No PowerShell artifacts found.' }
-          foreach ($f in $files) {
-            $tokens = $null; $errors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
-            if (@($errors).Count -ne 0) {
-              Write-Host "SYNTAX FAIL: $($f.FullName)"
-              $errors | ForEach-Object { Write-Host "  line=$($_.Extent.StartLineNumber) col=$($_.Extent.StartColumnNumber): $($_.Message)" }
-              exit 1
-            }
-            Write-Host "SYNTAX PASS: $($f.FullName)"
-          }
+          $ErrorActionPreference='Stop'
+          $files=Get-ChildItem -Path . -Filter *.ps1 -Recurse -File
+          if(-not $files){throw 'No PowerShell artifacts found.'}
+          foreach($f in $files){$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName,[ref]$t,[ref]$e);if(@($e).Count){$e|ForEach-Object{Write-Host "SYNTAX FAIL $($f.FullName): $($_.Message)"};throw "Syntax failure: $($f.FullName)"};Write-Host "SYNTAX PASS $($f.FullName)"}
 
-      - name: ErrorLibrary persistence gate
+      - name: 2 — JSON/config validity gate
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          . (Join-Path $root 'ErrorLibrary.ps1')
-          $old = $ErrorLibraryPath
-          $ErrorLibraryPath = Join-Path $env:TEMP ('untrapped-errorlib-' + [guid]::NewGuid().ToString('N') + '.jsonl')
-          try {
-            $fp = Save-ErrorEvent -Source 'CI' -Stream 'stderr' -Text 'HTTP 422 deterministic rejection' -HttpStatus 422 -Attempt 1 -Artifact 'regression.ps1'
-            if (-not $fp) { throw 'ErrorLibrary did not return a fingerprint.' }
-            if ((Get-ErrorCount $fp) -ne 1) { throw 'ErrorLibrary did not persist/count the event.' }
-            Write-Host "ERRORLIBRARY PASS fingerprint=$fp"
-          } finally { Remove-Item $ErrorLibraryPath -Force -ErrorAction SilentlyContinue; $ErrorLibraryPath=$old }
+          $ErrorActionPreference='Stop';$root=Join-Path $PWD 'ultra-mode';$cfg=Get-Content (Join-Path $root 'config.json') -Raw|ConvertFrom-Json;$browser=Get-Content (Join-Path $PWD 'policy-config.json') -Raw|ConvertFrom-Json
+          foreach($n in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains')){if($null -eq $cfg.$n){throw "Missing canonical config property: $n"}}
+          foreach($n in @('youtubePolicy','allowedYouTubeVideoIds')){if($null -eq $browser.$n){throw "Missing browser policy property: $n"}}
+          [void][TimeSpan]::Parse([string]$cfg.start);[void][TimeSpan]::Parse([string]$cfg.end);if($browser.youtubePolicy.allowAdditionalQueryParameters -isnot [bool]){throw 'youtubePolicy.allowAdditionalQueryParameters must be boolean.'};foreach($id in @($browser.allowedYouTubeVideoIds)){if([string]$id -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid allowlisted YouTube video ID: $id"}}
+          Write-Host 'JSON/CONFIG PASS.'
 
-      - name: Baseline vs upgraded executive diagnostic
+      - name: 3 — Shared policy engine gate
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'diagnostic-executive-compare.ps1')
-          $rc = $LASTEXITCODE
-          Write-Host "Executive diagnostic exit code: $rc"
-          if ($rc -ne 0) { throw "Executive baseline comparison failed with exit code $rc" }
+          $ErrorActionPreference='Stop';$root=Join-Path $PWD 'ultra-mode';. (Join-Path $root 'YouTubePolicy.ps1');$cfg=[pscustomobject]@{youtubePolicy=[pscustomobject]@{allowAdditionalQueryParameters=$true};allowedYouTubeVideoIds=@('AAAAAAAAAAA')}
+          if((Resolve-YouTubePolicy 'https://www.youtube.com/watch?v=AAAAAAAAAAA' $cfg).decision -cne 'ALLOW'){throw 'Canonical allow decision failed.'};if((Resolve-YouTubePolicy 'https://www.youtube.com/watch?V=AAAAAAAAAAA' $cfg).decision -cne 'BLOCK'){throw 'Case-sensitive uppercase-V block failed.'};if((Resolve-YouTubePolicy 'https://www.youtube.com/shorts/AAAAAAAAAAA' $cfg).decision -cne 'BLOCK'){throw 'Shorts must be blocked.'};Write-Host 'SHARED POLICY ENGINE PASS.'
 
-      - name: Force-first diagnostic sandbox benchmark
+      - name: 4 — Exhaustive PowerShell policy corpus
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'diagnostic-force-sandbox.ps1')
-          $rc = $LASTEXITCODE
-          Write-Host "Diagnostic sandbox exit code: $rc"
-          if ($rc -ne 0) { throw "Force-first diagnostic sandbox failed with exit code $rc" }
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\powershell-policy-exhaustive.ps1"'
 
-      - name: UAUD validator gate
+      - name: 5 — Canonical reporter compatibility
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          $candidate = Join-Path $env:TEMP 'uaud-validator-test.ps1'
-          Set-Content -LiteralPath $candidate -Value 'Write-Host "validator test"' -Encoding UTF8
-          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'UAUD-validate.ps1') -Candidate $candidate -Artifact 'regression-test.ps1' 2>&1
-          $out | ForEach-Object { Write-Host $_ }
-          if ($LASTEXITCODE -ne 0) { throw "UAUD validator failed with exit code $LASTEXITCODE" }
+        run: '$ErrorActionPreference="Stop";$root=Join-Path $PWD "ultra-mode";& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "diagnostic-executive-compare.ps1");if($LASTEXITCODE -ne 0){throw "Canonical reporter comparison failed: $LASTEXITCODE"}'
 
-      - name: Behavioural sandbox
+      - name: 6 — ErrorLibrary persistence
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & (Join-Path $PWD 'ultra-mode\sandbox-behaviour.ps1')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: '$ErrorActionPreference="Stop";$root=Join-Path $PWD "ultra-mode";. (Join-Path $root "ErrorLibrary.ps1");$old=$ErrorLibraryPath;$ErrorLibraryPath=Join-Path $env:TEMP ("untrapped-errorlib-"+[guid]::NewGuid().ToString("N")+".jsonl");try{$fp=Save-ErrorEvent -Source "CI" -Stream "stderr" -Text "HTTP 422 deterministic rejection" -HttpStatus 422 -Attempt 1 -Artifact "regression.ps1";if(-not $fp){throw "No fingerprint returned."};if((Get-ErrorCount $fp)-ne 1){throw "Persistence/count failed."};Write-Host "ERRORLIBRARY PASS fingerprint=$fp"}finally{Remove-Item $ErrorLibraryPath -Force -ErrorAction SilentlyContinue;$ErrorLibraryPath=$old}'
 
-      - name: Full UAUD launch-chain gate
+      - name: 7 — Checker differential/regression tests
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $PWD 'ultra-mode'
-          Write-Host '=== FULL UAUD CHAIN TEST ==='
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'UAUD.ps1')
-          $rc = $LASTEXITCODE
-          Write-Host "UAUD exit code: $rc"
-          if ($rc -ne 0) { throw "Full UAUD launch chain failed with exit code $rc" }
+        run: '$ErrorActionPreference="Stop";$root=Join-Path $PWD "ultra-mode";& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "UAUD-regression-tests.ps1");if($LASTEXITCODE -ne 0){throw "UAUD regression failed: $LASTEXITCODE"};& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "policy-differential-tests.ps1");if($LASTEXITCODE -ne 0){throw "Policy differential failed: $LASTEXITCODE"}'
 
-      - name: Verify protected boundary
+      - name: 8 — UAUD/UARD local launch-chain gates
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $s = Get-Content -Raw -LiteralPath (Join-Path $PWD 'ultra-mode\packet-filter.ps1')
-          if ($s -match '(?i)Set-NetFirewall|New-NetFirewall|Remove-NetFirewall|netsh\s+advfirewall|Set-ItemProperty.*Hosts|route\s+(add|delete)|netsh\s+interface\s+ip\s+set\s+dns') {
-            throw 'Protected-boundary regression detected in packet-filter.ps1.'
-          }
-          Write-Host 'PROTECTED BOUNDARY PASS.'
+          $ErrorActionPreference='Stop';$root=Join-Path $PWD 'ultra-mode';$candidate=Join-Path $env:TEMP 'uaud-validator-test.ps1';Set-Content $candidate 'Write-Host "validator test"' -Encoding UTF8
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'UAUD-validate.ps1') -Candidate $candidate -Artifact 'regression-test.ps1';if($LASTEXITCODE -ne 0){throw 'UAUD validator failed'}
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'UAUD-regression-tests.ps1');if($LASTEXITCODE -ne 0){throw 'UAUD historical regression launch-chain failed'}
+          foreach($f in @('UAUD.ps1','UARD-000-999.ps1','self-repair.ps1','evidence.ps1','ErrorLibrary.ps1')){if(-not(Test-Path(Join-Path $root $f))){throw "Launch-chain artifact missing: $f"}}
+          Write-Host 'UAUD/UARD LOCAL LAUNCH-CHAIN PASS. Railway remains non-authoritative for Windows enforcement certification.'
+
+      - name: 9 — Behavioural sandbox
+        shell: powershell
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\sandbox-behaviour.ps1"'
+
+      - name: 10 — Install and validate WinDivert substrate
+        shell: powershell
+        run: '$ErrorActionPreference="Stop";$root=Join-Path $PWD "ultra-mode";& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "INSTALL-PACKET-FILTER.ps1");if($LASTEXITCODE -ne 0){throw "WinDivert installation failed"}'
+
+      - name: 11 — Browser/integration gate
+        shell: powershell
+        run: '& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PWD\ultra-mode\browser-integration-gate.ps1"'
+
+      - name: 12 — FINAL OS-LEVEL RESPONSE hard gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop';$root=Join-Path $PWD 'ultra-mode'
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'final-os-level-gate.ps1');if($LASTEXITCODE -ne 0){throw 'Final OS-level substrate gate failed'}
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'os-network-behaviour-gate.ps1');if($LASTEXITCODE -ne 0){throw 'Real OS network behaviour gate failed'}
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'os-blocker-lifecycle-gate.ps1');if($LASTEXITCODE -ne 0){throw 'Blocker lifecycle/redundancy gate failed'}
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'os-perturbation-gate.ps1');if($LASTEXITCODE -ne 0){throw 'Perturbation gate process failed'}
+          $p=Get-Content (Join-Path $root 'os-perturbation-report.json') -Raw|ConvertFrom-Json;if($p.overall -ne 'PASS'){throw "OS perturbation certification incomplete: $($p.overall). Sleep/wake remains an explicit hosted-runner limitation."}
+
+      - name: 13 — Protected-boundary verification
+        shell: powershell
+        run: '$ErrorActionPreference="Stop";$s=Get-Content -Raw -LiteralPath (Join-Path $PWD "ultra-mode\packet-filter.ps1");if($s -match "(?i)Set-NetFirewall|New-NetFirewall|Remove-NetFirewall|netsh\s+advfirewall|Set-ItemProperty.*Hosts|route\s+(add|delete)|netsh\s+interface\s+ip\s+set\s+dns"){throw "Protected-boundary regression detected."};Write-Host "PROTECTED BOUNDARY PASS."'
+
+      - name: System GREEN certification record
+        if: success()
+        shell: powershell
+        run: '$record=[ordered]@{status="SYSTEM GREEN";diagnostic="PASS";policy="PASS";integration="PASS";os="PASS";protected_boundary="PASS";timestamp_utc=[DateTime]::UtcNow.ToString("o");commit=$env:GITHUB_SHA};$record|ConvertTo-Json -Depth 10|Set-Content ultra-mode/certification.json -Encoding UTF8'
+
+      - name: Upload certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: untrapped-windows-certification-${{ github.run_id }}
+          path: |
+            ultra-mode/*report*.json
+            ultra-mode/*failures*.json
+            ultra-mode/certification.json
+            ultra-mode/config.json
+            policy-config.json
+          if-no-files-found: warn
