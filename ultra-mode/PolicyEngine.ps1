@@ -1,4 +1,3 @@
-Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 
 function Read-PolicyConfig([string]$Path = (Join-Path $PSScriptRoot '..\youtube-allowlist.json')) {
