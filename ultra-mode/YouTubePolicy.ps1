@@ -39,12 +39,13 @@ function Resolve-YouTubePolicy([string]$Url,[object]$Config) {
     if ($uri.Fragment) { return New-YouTubePolicyResult $defaultDecision 'fragment-present' $Url }
 
     try { $pairs = @(Parse-PolicyQuery $uri.Query.TrimStart('?')) } catch { return New-YouTubePolicyResult $defaultDecision 'malformed-query' $Url }
+    $encodedIdentity = @($pairs | Where-Object { $_.key -ieq 'v' -and $_.rawKey -cne 'v' })
+    if ($encodedIdentity.Count -gt 0) { return New-YouTubePolicyResult $defaultDecision 'encoded-parameter-name' $Url }
     $v = @($pairs | Where-Object { $_.key -ceq 'v' })
     if ($v.Count -ne 1) {
         $reason = if ($v.Count -eq 0) { 'missing-lowercase-v' } else { 'duplicate-v' }
         return New-YouTubePolicyResult $defaultDecision $reason $Url
     }
-    if ([string]$v[0].rawKey -cne 'v') { return New-YouTubePolicyResult $defaultDecision 'encoded-parameter-name' $Url }
     if ([string]$v[0].rawValue -cnotmatch '^[A-Za-z0-9_-]{11}$') { return New-YouTubePolicyResult $defaultDecision 'encoded-or-invalid-video-id' $Url }
     if ([string]$v[0].value -cnotmatch '^[A-Za-z0-9_-]{11}$') { return New-YouTubePolicyResult $defaultDecision 'invalid-video-id' $Url }
 
