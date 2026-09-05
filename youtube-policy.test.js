@@ -2,14 +2,18 @@ const fs = require("fs");
 const vm = require("vm");
 
 const source = fs.readFileSync("youtube-policy.js", "utf8");
-const context = { URL, Set };
+const fsRules = fs.readFileSync("youtube-allowlist.json", "utf8");
+const context = { URL, Set, chrome: { runtime: { getURL: () => "youtube-allowlist.json" } }, fetch: async () => ({ ok: true, json: async () => JSON.parse(fsRules) }) };
 vm.createContext(context);
 vm.runInContext(source, context);
 const P = context.UntrappedYouTubePolicy;
 
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+(async () => { await P.loadRules();
 
 const allowed = [
   "https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en",
@@ -33,4 +37,4 @@ const blocked = [
 
 for (const url of blocked) assert(!P.isAllowedYouTubeUrl(url), "should block: " + url);
 
-console.log("YOUTUBE POLICY PASS: allowlist/denylist corpus passed.");
+console.log("YOUTUBE POLICY PASS: allowlist/denylist corpus passed."); })().catch(err => { console.error(err); process.exit(1); });
