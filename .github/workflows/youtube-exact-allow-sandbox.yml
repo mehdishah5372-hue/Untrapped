@@ -166,36 +166,9 @@ jobs:
           if($liveFail -ne 0){throw "Live browser sample had $liveFail escapes"}
           Write-Host '1000/1000 REAL VIDEO IDS: all non-allowed IDs rejected by the exact-allow rule; live browser sample also blocked.'
 
-      - name: Fetch and compare immutable canonical reporter
+      - name: Fetch and compare pinned canonical reporter
         shell: pwsh
-        timeout-minutes: 5
-        run: |
-          $ErrorActionPreference='Stop'
-          $baselineCommit='65fec7380613b0bfd673708cb046795b3d28c7e7'
-          $url="https://raw.githubusercontent.com/mehdishah5372-hue/Untrapped/$baselineCommit/ultra-mode/ErrorLibrary.ps1"
-          $canonical="$env:TEMP\ErrorLibrary-canonical.ps1"
-          Invoke-WebRequest -Uri $url -Headers @{'User-Agent'='UAUD-CANON-COMPARE/1.0'} -UseBasicParsing -OutFile $canonical
-          if(-not(Test-Path $canonical)){throw 'Canonical reporter download failed'}
-          $text=Get-Content $canonical -Raw
-          if($text -notmatch '\$ErrorLibraryVersion\s*=\s*''1\.1\.1'''){throw 'Pinned baseline reporter artifact is not the expected 1.1.1 implementation'}
-          $sha=(Get-FileHash $canonical -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "CANONICAL REPORTER SHA256=$sha"
-          $localSha=(Get-FileHash ./ultra-mode/ErrorLibrary.ps1 -Algorithm SHA256).Hash.ToLowerInvariant();Write-Host "SANDBOX REPORTER SHA256=$localSha"
-          $canonVersion=[regex]::Match($text,'\$ErrorLibraryVersion\s*=\s*''([^'']+)''').Groups[1].Value;if($canonVersion -ne '1.1.1'){throw "Pinned baseline reporter version mismatch: $canonVersion"}
-          $canonReporter=[regex]::Match($text,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
-          $localText=Get-Content ./ultra-mode/ErrorLibrary.ps1 -Raw
-          $localReporter=[regex]::Match($localText,'(?s)function Save-ErrorEvent.*?\n}\s*\n\s*function Get-ErrorCount').Value
-          $normCanon=($canonReporter -replace '\s+',' ').Trim()
-          $normLocal=($localReporter -replace '\s+',' ').Trim()
-          if($normCanon -ne $normLocal){throw 'REPORTER IMPLEMENTATION DIVERGENCE: Save-ErrorEvent differs from pinned baseline'}
-          Write-Host 'SAVE-ERROR-EVENT IMPLEMENTATION: byte-normalized contract identical to pinned baseline'
-          $tmp1="$env:TEMP\canon-record.jsonl";$tmp2="$env:TEMP\sandbox-record.jsonl"
-          & powershell -NoProfile -Command ". '$canonical'; `$ErrorLibraryPath='$tmp1'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
-          & powershell -NoProfile -Command ". './ultra-mode/ErrorLibrary.ps1'; `$ErrorLibraryPath='$tmp2'; Save-ErrorEvent -Source 'UAUD' -Stream 'output-scan' -Text '[ERROR] synthetic canonical failure' -HttpStatus 500 -Attempt 2 -Artifact 'UAUD.ps1' -CandidateHash 'A' -PreviousCandidateHash 'B' -Context 'stage=test' | Out-Null"
-          $a=(Get-Content $tmp1 -Raw|ConvertFrom-Json);$b=(Get-Content $tmp2 -Raw|ConvertFrom-Json)
-          $fields='schema','stream','source','artifact','category','fingerprint','text','exit_code','http_status','candidate_hash','previous_candidate_hash','attempt','repair_action','syntax_result','context'
-          foreach($field in $fields){if([string]$a.$field -ne [string]$b.$field){throw "REPORTER FIELD DIVERGENCE: $field canonical=[$($a.$field)] sandbox=[$($b.$field)]"}}
-          Write-Host "CANONICAL REPORTER CONTRACT: PASS (pinned baseline commit $baselineCommit)"
-          Write-Host 'UAUD/UARD/middleman-facing reporter uses the same Save-ErrorEvent schema; dynamic timestamp intentionally excluded.'
+        run: & ./ultra-mode/reporter-contract-sandbox.ps1
       - name: Canon reporter vs upgraded checker adversarial contract test
         shell: pwsh
         timeout-minutes: 10
