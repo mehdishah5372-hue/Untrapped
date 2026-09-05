@@ -1,8 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
+function New-YouTubePolicyResult([string]$Decision,[string]$Reason,[string]$Url) {
+    [pscustomobject]@{ decision=$Decision; reason=$Reason; url=$Url }
+}
+
 function Decode-PolicyComponent([string]$Value) {
     if ($Value -match '%(?![0-9A-Fa-f]{2})') { throw 'Malformed percent encoding.' }
-    [Uri]::UnescapeDataString(($Value -replace '\+', ' '))
+    [Uri]::UnescapeDataString(($Value -replace '\\+', ' '))
 }
 
 function Parse-PolicyQuery([string]$RawQuery) {
@@ -24,25 +28,28 @@ function Get-YouTubePolicyConfig($Config) {
 }
 
 function Resolve-YouTubePolicy([string]$Url,[object]$Config) {
-    $default = [ordered]@{ decision='BLOCK'; reason='default-deny'; url=$Url }
-    try { $uri = [Uri]$Url } catch { return [pscustomobject]($default + @{reason='invalid-url'}) }
-    if ($uri.Scheme -cne 'https') { return [pscustomobject]($default + @{reason='scheme-not-https'}) }
+    $defaultDecision = 'BLOCK'
+    try { $uri = [Uri]$Url } catch { return New-YouTubePolicyResult $defaultDecision 'invalid-url' $Url }
+    if ($uri.Scheme -cne 'https') { return New-YouTubePolicyResult $defaultDecision 'scheme-not-https' $Url }
     $hostName = $uri.Host.ToLowerInvariant().TrimEnd('.')
-    if (@('youtube.com','www.youtube.com','m.youtube.com') -notcontains $hostName) { return [pscustomobject]($default + @{reason='host-not-allowlisted'}) }
-    if ($uri.Port -ne 443) { return [pscustomobject]($default + @{reason='non-default-port'}) }
-    if ($uri.UserInfo) { return [pscustomobject]($default + @{reason='credentials-present'}) }
-    if ($uri.AbsolutePath -cne '/watch') { return [pscustomobject]($default + @{reason='path-not-watch'}) }
-    if ($uri.Fragment) { return [pscustomobject]($default + @{reason='fragment-present'}) }
+    if (@('youtube.com','www.youtube.com','m.youtube.com') -notcontains $hostName) { return New-YouTubePolicyResult $defaultDecision 'host-not-allowlisted' $Url }
+    if ($uri.Port -ne 443) { return New-YouTubePolicyResult $defaultDecision 'non-default-port' $Url }
+    if ($uri.UserInfo) { return New-YouTubePolicyResult $defaultDecision 'credentials-present' $Url }
+    if ($uri.AbsolutePath -cne '/watch') { return New-YouTubePolicyResult $defaultDecision 'path-not-watch' $Url }
+    if ($uri.Fragment) { return New-YouTubePolicyResult $defaultDecision 'fragment-present' $Url }
 
-    try { $pairs = @(Parse-PolicyQuery $uri.Query.TrimStart('?')) } catch { return [pscustomobject]($default + @{reason='malformed-query'}) }
+    try { $pairs = @(Parse-PolicyQuery $uri.Query.TrimStart('?')) } catch { return New-YouTubePolicyResult $defaultDecision 'malformed-query' $Url }
     $v = @($pairs | Where-Object { $_.key -ceq 'v' })
-    if ($v.Count -ne 1) { return [pscustomobject]($default + @{reason=if($v.Count -eq 0){'missing-lowercase-v'}else{'duplicate-v'}}) }
-    if ([string]$v[0].rawKey -cne 'v') { return [pscustomobject]($default + @{reason='encoded-parameter-name'}) }
-    if ([string]$v[0].rawValue -cnotmatch '^[A-Za-z0-9_-]{11}$') { return [pscustomobject]($default + @{reason='encoded-or-invalid-video-id'}) }
-    if ([string]$v[0].value -cnotmatch '^[A-Za-z0-9_-]{11}$') { return [pscustomobject]($default + @{reason='invalid-video-id'}) }
+    if ($v.Count -ne 1) {
+        $reason = if ($v.Count -eq 0) { 'missing-lowercase-v' } else { 'duplicate-v' }
+        return New-YouTubePolicyResult $defaultDecision $reason $Url
+    }
+    if ([string]$v[0].rawKey -cne 'v') { return New-YouTubePolicyResult $defaultDecision 'encoded-parameter-name' $Url }
+    if ([string]$v[0].rawValue -cnotmatch '^[A-Za-z0-9_-]{11}$') { return New-YouTubePolicyResult $defaultDecision 'encoded-or-invalid-video-id' $Url }
+    if ([string]$v[0].value -cnotmatch '^[A-Za-z0-9_-]{11}$') { return New-YouTubePolicyResult $defaultDecision 'invalid-video-id' $Url }
 
     $policy = Get-YouTubePolicyConfig $Config
-    if (-not $policy.allowAdditionalQueryParameters -and $pairs.Count -ne 1) { return [pscustomobject]($default + @{reason='additional-query-parameters'}) }
-    if (-not $policy.allowedIds.Contains([string]$v[0].value)) { return [pscustomobject]($default + @{reason='video-not-allowlisted'}) }
+    if (-not $policy.allowAdditionalQueryParameters -and $pairs.Count -ne 1) { return New-YouTubePolicyResult $defaultDecision 'additional-query-parameters' $Url }
+    if (-not $policy.allowedIds.Contains([string]$v[0].value)) { return New-YouTubePolicyResult $defaultDecision 'video-not-allowlisted' $Url }
     [pscustomobject]@{ decision='ALLOW'; reason='explicit-video-allowlist'; host=$hostName; path=$uri.AbsolutePath; videoId=[string]$v[0].value; url=$Url }
 }
