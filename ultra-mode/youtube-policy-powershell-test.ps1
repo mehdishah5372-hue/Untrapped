@@ -1,24 +1,20 @@
 $ErrorActionPreference='Stop'
-$path=Join-Path (Split-Path -Parent $PSScriptRoot) 'youtube-allowlist.json'
+Set-Location $env:GITHUB_WORKSPACE
+$path=Join-Path $env:GITHUB_WORKSPACE 'youtube-allowlist.json'
 if(-not(Test-Path -LiteralPath $path)){throw "Missing allowlist: $path"}
-$rules=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
+$raw=Get-Content -LiteralPath $path -Raw
+$rules=$raw|ConvertFrom-Json
 if([int]$rules.version -ne 1){throw 'Unsupported allowlist version'}
-if($rules.policy.allowOnlyListedWatchVideos -ne $true){throw 'allowOnlyListedWatchVideos must be true'}
+if([bool]$rules.policy.allowOnlyListedWatchVideos -ne $true){throw 'allowOnlyListedWatchVideos must be true'}
 $entries=@($rules.allowedYouTubeUrls)
 if($entries.Count -lt 1){throw 'Allowlist must contain at least one URL'}
-$allowedIds=@()
 foreach($entry in $entries){
   $url=[string]$entry.url
-  if($url -notmatch '^https://(?:www\.|m\.)?youtube\.com/watch\?'){throw "Invalid allowed URL: $url"}
-  $matches=[regex]::Matches($url,'(?:^|&)v=([^&#]+)')
-  if($matches.Count -ne 1){throw "Allowed URL must contain exactly one v parameter: $url"}
-  $id=$matches[0].Groups[1].Value
-  if($id -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid video ID: $id"}
+  if($url -notmatch '^https://(www\.|m\.)?youtube\.com/watch\?'){throw "Invalid allowed URL: $url"}
+  $vm=[regex]::Matches($url,'(?:^|&)v=([^&#]+)')
+  if($vm.Count -ne 1){throw "URL must have exactly one v parameter: $url"}
+  if($vm[0].Groups[1].Value -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid video ID"}
   if([string]::IsNullOrWhiteSpace([string]$entry.reason)){throw "Missing reason: $url"}
-  $allowedIds+=$id
 }
-if($allowedIds -contains 'dQw4w9WgXcQ'){throw 'Rickroll must not be allowlisted'}
-Write-Host "ALLOWLIST PATH=$path"
-Write-Host "ALLOWLIST ENTRIES=$($entries.Count)"
-Write-Host "ALLOWLIST VIDEO IDS=$($allowedIds -join ',')"
+if(@($entries|Where-Object { [string]$_.url -match 'dQw4w9WgXcQ' }).Count -gt 0){throw 'Rickroll is allowlisted'}
 Write-Host 'YOUTUBE JSON + POWERSHELL POLICY CONTRACT: PASS'
