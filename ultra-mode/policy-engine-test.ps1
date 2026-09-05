@@ -1,19 +1,21 @@
 $ErrorActionPreference="Stop"
-. (Join-Path $PSScriptRoot "PolicyEngine.ps1")
-Write-Host 'Loading PolicyEngine'; $p=Read-PolicyConfig; Write-Host "Loaded IDs=$($p.AllowedVideoIds.Count)"
-if($p.AllowedVideoIds.Count -lt 1){throw "No allowlisted IDs"}
-$id=@($p.AllowedVideoIds)[0]
-$cases=@(
- @{u="https://m.youtube.com/watch?v=$id&vl=en";d="ALLOW"},
- @{u="https://www.youtube.com/watch?vl=en&v=$id";d="ALLOW"},
- @{u="https://www.youtube.com/watch?v=$id#x";d="ALLOW"},
- @{u="https://www.youtube.com/watch?V=$id";d="BLOCK"},
- @{u="https://www.youtube.com/watch?v=$id&v=dQw4w9WgXcQ";d="BLOCK"},
- @{u="https://www.youtube.com/shorts/2wgg7KtzTrU";d="BLOCK"},
- @{u="https://youtu.be/$id";d="BLOCK"},
- @{u="http://www.youtube.com/watch?v=$id";d="BLOCK"},
- @{u="https://evil.youtube.com/watch?v=$id";d="BLOCK"},
- @{u="https://www.youtube.com/watch?v=dQw4w9WgXcQ";d="BLOCK"}
-)
-foreach($c in $cases){try{$r=Resolve-PolicyDecision $c.u $p;if($r.Decision -cne $c.d){throw "POLICY MISMATCH $($c.u): expected=$($c.d) actual=$($r.Decision)"}}catch{Write-Host "CASE FAIL: $($c.u)";Write-Host $_.Exception.ToString();throw}}
-Write-Host "POLICY ENGINE PASS: $($cases.Count) deterministic cases"
+. "$PSScriptRoot\PolicyEngine.ps1"
+$p=Read-PolicyConfig
+$id=[string]$p.AllowedVideoIds[0]
+Write-Host "Loaded allowlisted ID: $id"
+function Assert-Decision($u,$expected){
+  $x=Resolve-PolicyDecision -Url $u -Policy $p
+  Write-Host "$($x.Decision) expected=$expected $u"
+  if([string]$x.Decision -cne $expected){throw "POLICY MISMATCH expected=$expected actual=$($x.Decision) url=$u"}
+}
+Assert-Decision "https://m.youtube.com/watch?v=$id&vl=en" "ALLOW"
+Assert-Decision "https://www.youtube.com/watch?vl=en&v=$id" "ALLOW"
+Assert-Decision "https://www.youtube.com/watch?v=$id#x" "ALLOW"
+Assert-Decision "https://www.youtube.com/watch?V=$id" "BLOCK"
+Assert-Decision "https://www.youtube.com/watch?v=$id&v=dQw4w9WgXcQ" "BLOCK"
+Assert-Decision "https://www.youtube.com/shorts/$id" "BLOCK"
+Assert-Decision "https://youtu.be/$id" "BLOCK"
+Assert-Decision "http://www.youtube.com/watch?v=$id" "BLOCK"
+Assert-Decision "https://evil.youtube.com/watch?v=$id" "BLOCK"
+Assert-Decision "https://www.youtube.com/watch?v=dQw4w9WgXcQ" "BLOCK"
+Write-Host "POLICY ENGINE PASS: 10 deterministic cases"
