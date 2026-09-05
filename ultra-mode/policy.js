@@ -43,9 +43,10 @@
 
     let pairs;
     try { pairs = parseQuery(url.search.slice(1)); } catch (_) { return { ...result, reason: "malformed-query" }; }
+    const encodedIdentity = pairs.filter((p) => p.key.toLowerCase() === "v" && p.rawKey !== "v");
+    if (encodedIdentity.length > 0) return { ...result, reason: "encoded-parameter-name" };
     const v = pairs.filter((p) => p.key === "v");
     if (v.length !== 1) return { ...result, reason: v.length === 0 ? "missing-lowercase-v" : "duplicate-v" };
-    if (v[0].rawKey !== "v") return { ...result, reason: "encoded-parameter-name" };
     if (!VIDEO_ID_RE.test(v[0].rawValue)) return { ...result, reason: "encoded-or-invalid-video-id" };
     if (!VIDEO_ID_RE.test(v[0].value)) return { ...result, reason: "invalid-video-id" };
 
