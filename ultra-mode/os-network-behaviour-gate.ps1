@@ -22,8 +22,10 @@ function Invoke-Probe([string]$Label){
   Remove-Item $errFile -Force -ErrorAction SilentlyContinue
   # --resolve binds SNI/hostname to the exact A record used by the WinDivert
   # filter. --noproxy prevents an environment proxy from bypassing the test.
-  $args=@('-4','--noproxy','*','--resolve',$resolve,'-sS','-o','NUL','--connect-timeout','5','--max-time','8','https://example.com/')
-  & curl.exe @args 2>$errFile
+  # --stderr keeps curl's expected nonzero error off PowerShell's native-command
+  # error stream so LASTEXITCODE remains authoritative.
+  $args=@('-4','--noproxy','*','--resolve',$resolve,'-sS','--stderr',$errFile,'-o','NUL','--connect-timeout','5','--max-time','8','https://example.com/')
+  & curl.exe @args
   $rc=$LASTEXITCODE
   $err=''
   if(Test-Path $errFile){$raw=Get-Content $errFile -Raw -ErrorAction SilentlyContinue;if($null -ne $raw){$err=([string]$raw).Trim()}}
