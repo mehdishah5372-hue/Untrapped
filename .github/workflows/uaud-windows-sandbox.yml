@@ -33,9 +33,11 @@ jobs:
           $root=Join-Path $PWD 'ultra-mode'
           $cfg=Get-Content (Join-Path $root 'config.json') -Raw|ConvertFrom-Json
           $browser=Get-Content (Join-Path $PWD 'policy-config.json') -Raw|ConvertFrom-Json
-          foreach($n in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains','youtubePolicy','allowedYouTubeVideoIds')){if($null -eq $cfg.$n){throw "Missing config property: $n"}}
+          foreach($n in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains')){if($null -eq $cfg.$n){throw "Missing canonical config property: $n"}}
+          foreach($n in @('youtubePolicy','allowedYouTubeVideoIds')){if($null -eq $browser.$n){throw "Missing browser policy property: $n"}}
           [void][TimeSpan]::Parse([string]$cfg.start);[void][TimeSpan]::Parse([string]$cfg.end)
-          if((ConvertTo-Json $browser -Compress -Depth 10) -ne (ConvertTo-Json ([ordered]@{youtubePolicy=$cfg.youtubePolicy;allowedYouTubeVideoIds=@($cfg.allowedYouTubeVideoIds)}) -Compress -Depth 10)){throw 'Browser policy snapshot does not match canonical JSON policy.'}
+          if($browser.youtubePolicy.allowAdditionalQueryParameters -isnot [bool]){throw 'youtubePolicy.allowAdditionalQueryParameters must be boolean.'}
+          foreach($id in @($browser.allowedYouTubeVideoIds)){if([string]$id -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Invalid allowlisted YouTube video ID: $id"}}
           Write-Host 'JSON/CONFIG PASS.'
 
       - name: 3 — Shared policy engine gate
