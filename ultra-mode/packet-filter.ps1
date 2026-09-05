@@ -55,160 +55,16 @@ function Test-YouTubeRules {
     $entries=@($rules.allowedYouTubeUrls)
     if($entries.Count -eq 0){throw 'YouTube allowlist is empty.'}
     foreach($entry in $entries){
-        $u=[Uri]$entry.url
-        if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com
-    foreach ($name in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains','browserOnlyDomains')) { if ($null -eq $config.$name) { throw "Missing config property: $name" } }
-    [void][TimeSpan]::Parse([string]$config.start); [void][TimeSpan]::Parse([string]$config.end)
-    $all = @(Normalize-Domains (@($config.domains)+@($config.alwaysBlockedDomains)+@($config.alwaysAllowedDomains)))
-    if ($all.Count -eq 0) { throw 'Configuration contains no domains.' }
-    [void](Test-YouTubeRules)
-    foreach ($d in $all) { $base = if ($d.StartsWith('*.')) {$d.Substring(2)} else {$d}; if ($base -notmatch '^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$') { throw "Invalid domain entry: $d" } }
-}
-function Test-UltraActive($config,[TimeSpan]$Now=(Get-Date).TimeOfDay) {
-    if (-not [bool]$config.enabled) { return $false }
-    $start=[TimeSpan]::Parse([string]$config.start); $end=[TimeSpan]::Parse([string]$config.end)
-    if ($start -eq $end) { return $true }; if ($start -lt $end) { return ($Now -ge $start -and $Now -lt $end) }; return ($Now -ge $start -or $Now -lt $end)
-}
-function Test-OverrideActive {
-    $path=Join-Path $Root 'override-until.txt'
-    if (-not (Test-Path $path)) { return $false }
-    try { return ([DateTime]::UtcNow -lt ([DateTime]::Parse((Get-Content $path -Raw)).ToUniversalTime())) } catch { return $false }
-}
-function Get-OsBlockDomains($domains,$browserOnlyDomains) {
-    $browser=[System.Collections.Generic.HashSet[string]]::new([string[]](Normalize-Domains $browserOnlyDomains))
-    @(Normalize-Domains $domains | Where-Object { -not $browser.Contains([string]$_) })
-}
-function Get-DomainIPs($domains) {
-    $set=[System.Collections.Generic.HashSet[string]]::new()
-    foreach ($domain in @(Normalize-Domains $domains | Where-Object { $_ -notmatch '^\*\.' })) {
-        $resolved=$false
-        foreach ($type in @('A','AAAA')) {
-            try { Resolve-DnsName -Name $domain -Type $type -DnsOnly -ErrorAction Stop | ForEach-Object { if ($_.IPAddress) { [void]$set.Add($_.IPAddress); $resolved=$true } } } catch { }
-        }
-        if (-not $resolved) { Write-Host "Warning: could not resolve $domain" }
-    }
-    @($set)
-}
-function New-WinDivertFilter($ips) {
-    $clauses=foreach ($ip in $ips) { try { $parsed=[System.Net.IPAddress]::Parse($ip); if($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork){"ip.DstAddr == $ip"}else{"ipv6.DstAddr == $ip"} } catch { } }
-    if (-not $clauses -or @($clauses).Count -eq 0) { return $null }
-    "outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443) and (" + (($clauses | ForEach-Object { "($_)" }) -join ' or ') + ")"
-}
-
-$handle=$InvalidHandle; $lastFilter=$null
-try {
-    Write-Host 'Untrapped Ultra Mode WinDivert filter starting.'
-    while ($true) {
-        $config=Get-Config; Test-Config $config
-        $override=Test-OverrideActive
-        $active=Test-UltraActive $config
-        $scheduled=if($active -and -not $override){@(Normalize-Domains $config.domains)}else{@()}
-        $always=@(Normalize-Domains $config.alwaysBlockedDomains)
-        $allowed=@(Normalize-Domains $config.alwaysAllowedDomains)
-        $osDomains=@(Get-OsBlockDomains (@($scheduled)+@($always)) $config.browserOnlyDomains)
-        $blockedIps=@(Get-DomainIPs $osDomains)
-        $allowedIps=@(Get-DomainIPs $allowed)
-        $allowedSet=[System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
-        $ips=@($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
-        $filter=New-WinDivertFilter $ips
-
-        if (-not $filter) {
-            if ($handle -ne $InvalidHandle) { [UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null; $handle=$InvalidHandle; $lastFilter=$null; Write-Host 'WinDivert block INACTIVE.' }
-            if($active -and -not $override -and $blockedIps.Count -eq 0 -and $always.Count -gt 0){ Write-Host 'No block filter opened: all configured block targets failed DNS resolution.' }
-            Start-Sleep -Seconds $RefreshSeconds; continue
-        }
-        if ($filter -ne $lastFilter) {
-            if($handle -ne $InvalidHandle){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null;$handle=$InvalidHandle}
-            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted; $($osDomains.Count) OS-block domains after browser-only exclusions)."
-            $handle=[UntrappedWinDivert.Native]::WinDivertOpen($filter,$LayerNetwork,$Priority,[UInt64]$FlagDrop)
-            if($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "WinDivertOpen failed with Windows error $errorCode."}
-            $lastFilter=$filter
-            Write-Host "WinDivert packet block ACTIVE. Policy state: $(if($override){'OVERRIDE'}elseif($active){'SCHEDULED ACTIVE'}else{'ALWAYS-BLOCK-ONLY'})."
-        }
-        Start-Sleep -Seconds $RefreshSeconds
-    }
-} finally { if($handle -ne $InvalidHandle -and $handle -ne [IntPtr]::Zero){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null} }
- -or $u.AbsolutePath -ne '/watch'){throw "Invalid allowed YouTube URL: $($entry.url)"}
+        try{$u=[Uri]$entry.url}catch{throw "Invalid allowed YouTube URL: $($entry.url)"}
+        if($u.Scheme -ne 'https' -or $u.Host -notmatch '^(www\.)?(m\.)?youtube\.com$' -or $u.AbsolutePath -ne '/watch'){throw "Invalid allowed YouTube URL: $($entry.url)"}
         $q=[System.Web.HttpUtility]::ParseQueryString($u.Query)
-        if($q['v'] -notmatch '^[A-Za-z0-9_-]{11}
-    foreach ($name in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains','browserOnlyDomains')) { if ($null -eq $config.$name) { throw "Missing config property: $name" } }
-    [void][TimeSpan]::Parse([string]$config.start); [void][TimeSpan]::Parse([string]$config.end)
-    $all = @(Normalize-Domains (@($config.domains)+@($config.alwaysBlockedDomains)+@($config.alwaysAllowedDomains)))
-    if ($all.Count -eq 0) { throw 'Configuration contains no domains.' }
-    foreach ($d in $all) { $base = if ($d.StartsWith('*.')) {$d.Substring(2)} else {$d}; if ($base -notmatch '^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$') { throw "Invalid domain entry: $d" } }
-}
-function Test-UltraActive($config,[TimeSpan]$Now=(Get-Date).TimeOfDay) {
-    if (-not [bool]$config.enabled) { return $false }
-    $start=[TimeSpan]::Parse([string]$config.start); $end=[TimeSpan]::Parse([string]$config.end)
-    if ($start -eq $end) { return $true }; if ($start -lt $end) { return ($Now -ge $start -and $Now -lt $end) }; return ($Now -ge $start -or $Now -lt $end)
-}
-function Test-OverrideActive {
-    $path=Join-Path $Root 'override-until.txt'
-    if (-not (Test-Path $path)) { return $false }
-    try { return ([DateTime]::UtcNow -lt ([DateTime]::Parse((Get-Content $path -Raw)).ToUniversalTime())) } catch { return $false }
-}
-function Get-OsBlockDomains($domains,$browserOnlyDomains) {
-    $browser=[System.Collections.Generic.HashSet[string]]::new([string[]](Normalize-Domains $browserOnlyDomains))
-    @(Normalize-Domains $domains | Where-Object { -not $browser.Contains([string]$_) })
-}
-function Get-DomainIPs($domains) {
-    $set=[System.Collections.Generic.HashSet[string]]::new()
-    foreach ($domain in @(Normalize-Domains $domains | Where-Object { $_ -notmatch '^\*\.' })) {
-        $resolved=$false
-        foreach ($type in @('A','AAAA')) {
-            try { Resolve-DnsName -Name $domain -Type $type -DnsOnly -ErrorAction Stop | ForEach-Object { if ($_.IPAddress) { [void]$set.Add($_.IPAddress); $resolved=$true } } } catch { }
-        }
-        if (-not $resolved) { Write-Host "Warning: could not resolve $domain" }
-    }
-    @($set)
-}
-function New-WinDivertFilter($ips) {
-    $clauses=foreach ($ip in $ips) { try { $parsed=[System.Net.IPAddress]::Parse($ip); if($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork){"ip.DstAddr == $ip"}else{"ipv6.DstAddr == $ip"} } catch { } }
-    if (-not $clauses -or @($clauses).Count -eq 0) { return $null }
-    "outbound and !loopback and (tcp.DstPort == 443 or udp.DstPort == 443) and (" + (($clauses | ForEach-Object { "($_)" }) -join ' or ') + ")"
-}
-
-$handle=$InvalidHandle; $lastFilter=$null
-try {
-    Write-Host 'Untrapped Ultra Mode WinDivert filter starting.'
-    while ($true) {
-        $config=Get-Config; Test-Config $config
-        $override=Test-OverrideActive
-        $active=Test-UltraActive $config
-        $scheduled=if($active -and -not $override){@(Normalize-Domains $config.domains)}else{@()}
-        $always=@(Normalize-Domains $config.alwaysBlockedDomains)
-        $allowed=@(Normalize-Domains $config.alwaysAllowedDomains)
-        $osDomains=@(Get-OsBlockDomains (@($scheduled)+@($always)) $config.browserOnlyDomains)
-        $blockedIps=@(Get-DomainIPs $osDomains)
-        $allowedIps=@(Get-DomainIPs $allowed)
-        $allowedSet=[System.Collections.Generic.HashSet[string]]::new([string[]]$allowedIps)
-        $ips=@($blockedIps | Where-Object { -not $allowedSet.Contains([string]$_) })
-        $filter=New-WinDivertFilter $ips
-
-        if (-not $filter) {
-            if ($handle -ne $InvalidHandle) { [UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null; $handle=$InvalidHandle; $lastFilter=$null; Write-Host 'WinDivert block INACTIVE.' }
-            if($active -and -not $override -and $blockedIps.Count -eq 0 -and $always.Count -gt 0){ Write-Host 'No block filter opened: all configured block targets failed DNS resolution.' }
-            Start-Sleep -Seconds $RefreshSeconds; continue
-        }
-        if ($filter -ne $lastFilter) {
-            if($handle -ne $InvalidHandle){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null;$handle=$InvalidHandle}
-            Write-Host "Opening WinDivert DROP filter for $($ips.Count) destination IPs ($($allowedIps.Count) allowed IPs exempted; $($osDomains.Count) OS-block domains after browser-only exclusions)."
-            $handle=[UntrappedWinDivert.Native]::WinDivertOpen($filter,$LayerNetwork,$Priority,[UInt64]$FlagDrop)
-            if($handle -eq $InvalidHandle -or $handle -eq [IntPtr]::Zero){$errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "WinDivertOpen failed with Windows error $errorCode."}
-            $lastFilter=$filter
-            Write-Host "WinDivert packet block ACTIVE. Policy state: $(if($override){'OVERRIDE'}elseif($active){'SCHEDULED ACTIVE'}else{'ALWAYS-BLOCK-ONLY'})."
-        }
-        Start-Sleep -Seconds $RefreshSeconds
-    }
-} finally { if($handle -ne $InvalidHandle -and $handle -ne [IntPtr]::Zero){[UntrappedWinDivert.Native]::WinDivertClose($handle)|Out-Null} }
-){throw "Allowed URL must contain a valid YouTube video id: $($entry.url)"}
+        if($q.GetAll('v').Count -ne 1 -or $q['v'] -notmatch '^[A-Za-z0-9_-]{11}$'){throw "Allowed URL must contain exactly one valid YouTube video id: $($entry.url)"}
         if([string]::IsNullOrWhiteSpace([string]$entry.reason)){throw "Every allowed YouTube URL requires a reason: $($entry.url)"}
     }
     Write-Host "YouTube JSON policy valid: $($entries.Count) explicitly allowed video URL(s)."
-    Write-Host 'PowerShell enforcement boundary: URL-level allowlist is enforced by the browser policy; WinDivert remains infrastructure-level and must not globally exempt YouTube media IPs.'
+    Write-Host 'PowerShell validates the URL allowlist; WinDivert does not globally exempt YouTube infrastructure because IP filtering cannot distinguish video paths.'
     return $rules
 }
-
 function Test-Config($config) {
     foreach ($name in @('enabled','start','end','domains','alwaysBlockedDomains','alwaysAllowedDomains','browserOnlyDomains')) { if ($null -eq $config.$name) { throw "Missing config property: $name" } }
     [void][TimeSpan]::Parse([string]$config.start); [void][TimeSpan]::Parse([string]$config.end)
