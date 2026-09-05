@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "allowedYouTubeUrls": [
+    {
+      "url": "https://m.youtube.com/watch?v=2wgg7KtzTrU&vl=en",
+      "reason": "Explicitly permitted video"
+    }
+  ],
+  "policy": {
+    "allowOnlyListedWatchVideos": true,
+    "allowHarmlessQueryParameterReordering": true,
+    "allowFragments": true,
+    "allowTrackingParameters": true
+  }
+}
