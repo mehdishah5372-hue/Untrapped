@@ -25,11 +25,15 @@ function Invoke-Probe([string]$Label){
 }
 $baseline=Invoke-Probe 'baseline-allow'
 if($baseline -ne 0){throw "Baseline network access to example.com failed; cannot certify OS behaviour. exit=$baseline"}
-
-$filter="outbound and !loopback and ip.DstAddr == $target and tcp.DstPort == 443"
+# Match the actual outbound TCP SYN/connection packets directly.  Omitting
+# outbound/loopback qualifiers makes the behavioural proof independent of
+# filter-direction classification while remaining specific to the target.
+$filter="ip.DstAddr == $target and tcp.DstPort == 443"
+Write-Host "DROP FILTER: $filter"
 $h=[UntrappedBehaviour.Native]::WinDivertOpen($filter,0,30000,[UInt64]0x0002)
 if($h -eq [IntPtr](-1) -or $h -eq [IntPtr]::Zero){$e=[Runtime.InteropServices.Marshal]::GetLastWin32Error();throw "Behaviour DROP WinDivertOpen failed: $e"}
 try{
+  Start-Sleep -Milliseconds 300
   $blocked=Invoke-Probe 'policy-blocked'
   if($blocked -eq 0){throw 'Network request succeeded while the WinDivert DROP filter was active.'}
   Write-Host 'OS BEHAVIOUR PASS: policy says BLOCK and the real network attempt was blocked.'
