@@ -7,7 +7,7 @@ function Read-PolicyConfig([string]$Path = (Join-Path $PSScriptRoot '..\youtube-
   if ($cfg.policy.allowOnlyListedWatchVideos -ne $true) { throw 'Unsafe policy: allowOnlyListedWatchVideos must be true.' }
   $entries = @($cfg.allowedYouTubeUrls)
   if ($entries.Count -lt 1) { throw 'Policy must contain at least one allowed URL.' }
-  $ids = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+  $ids = @()
   foreach ($e in $entries) {
     $u = [Uri][string]$e.url
     if ($u.Scheme -cne 'https' -or $u.Host -cnotmatch '^(?:www\.|m\.)?youtube\.com$' -or $u.AbsolutePath -cne '/watch') { throw "Invalid allowed URL: $($e.url)" }
@@ -17,7 +17,7 @@ function Read-PolicyConfig([string]$Path = (Join-Path $PSScriptRoot '..\youtube-
     $id = $v[0].Substring(2)
     if ($id -cnotmatch '^[A-Za-z0-9_-]{11}$') { throw "Invalid video ID: $id" }
     if ([string]::IsNullOrWhiteSpace([string]$e.reason)) { throw "Missing reason for $id" }
-    [void]$ids.Add($id)
+    $ids += $id
   }
   [pscustomobject]@{ Config=$cfg; Entries=$entries; AllowedVideoIds=$ids }
 }
@@ -33,6 +33,6 @@ function Resolve-PolicyDecision([string]$Url, $Policy = (Read-PolicyConfig)) {
   if ($v.Count -ne 1) { return [pscustomobject]@{Decision='BLOCK';Reason='Exactly one lowercase v parameter required';Url=$Url} }
   $id=$v[0].Substring(2)
   if ($id -cnotmatch '^[A-Za-z0-9_-]{11}$') { return [pscustomobject]@{Decision='BLOCK';Reason='Invalid video ID';Url=$Url} }
-  if (-not $Policy.AllowedVideoIds.Contains($id)) { return [pscustomobject]@{Decision='BLOCK';Reason='Video ID is not allowlisted';Url=$Url;VideoId=$id} }
+  if (-not ($Policy.AllowedVideoIds -ccontains $id)) { return [pscustomobject]@{Decision='BLOCK';Reason='Video ID is not allowlisted';Url=$Url;VideoId=$id} }
   [pscustomobject]@{Decision='ALLOW';Reason='Explicitly allowlisted video';Url=$Url;VideoId=$id}
 }
