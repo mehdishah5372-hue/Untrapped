@@ -7,7 +7,7 @@ function Read-PolicyConfig([string]$Path = (Join-Path $PSScriptRoot '..\youtube-
   if ($cfg.policy.allowOnlyListedWatchVideos -ne $true) { throw 'Unsafe policy: allowOnlyListedWatchVideos must be true.' }
   $entries = @($cfg.allowedYouTubeUrls)
   if ($entries.Count -lt 1) { throw 'Policy must contain at least one allowed URL.' }
-  $ids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  $ids = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
   foreach ($e in $entries) {
     $u = [Uri][string]$e.url
     if ($u.Scheme -cne 'https' -or $u.Host -cnotmatch '^(?:www\.|m\.)?youtube\.com$' -or $u.AbsolutePath -cne '/watch') { throw "Invalid allowed URL: $($e.url)" }
