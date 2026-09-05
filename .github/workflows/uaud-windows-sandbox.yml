@@ -61,7 +61,7 @@ jobs:
             @{url='https://www.youtube.com/watch?v=2wgg7KtzTrU&v=dQw4w9WgXcQ';allow=$false}
           )
           foreach($c in $cases){
-            $u=[Uri]$c.url;$m=[regex]::Matches($u.Query,'(?:^|&)v=([^&]*)');$ok=$false
+            $u=[Uri]$c.url;$m=[regex]::Matches($u.Query.TrimStart('?'),'(?:^|&)v=([^&]*)');$ok=$false
             if($u.Scheme -eq 'https' -and $u.Host -match '^(www\.)?(m\.)?youtube\.com$' -and $u.AbsolutePath -eq '/watch' -and $m.Count -eq 1 -and $ids -contains $m[0].Groups[1].Value){$ok=$true}
             if($ok -ne $c.allow){throw "Policy mismatch: $($c.url) expected=$($c.allow) actual=$ok"}
           }
