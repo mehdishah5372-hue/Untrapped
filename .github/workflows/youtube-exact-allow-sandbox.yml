@@ -166,6 +166,24 @@ jobs:
           if($liveFail -ne 0){throw "Live browser sample had $liveFail escapes"}
           Write-Host '1000/1000 REAL VIDEO IDS: all non-allowed IDs rejected by the exact-allow rule; live browser sample also blocked.'
 
+      - name: Canon reporter vs upgraded checker adversarial contract test
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference='Stop'
+          . ./ultra-mode/ErrorLibrary.ps1
+          $fake=@('The term foo is not recognized as the name of a cmdlet, function, script file, or operable program.','ParserError: Unexpected token } in expression or statement.','[ERROR] WinDivert failed to initialize.','ERROR: HTTP 500 from remote endpoint.','Request timed out after 30 seconds.','Access denied while opening device.','WARNING: retrying connection.','Narrative: the previous test reported a failure, but this line is only context.','All systems operational.','Exception: System.InvalidOperationException: synthetic test failure.','FATAL: synthetic kernel failure.','404 Not Found','409 Conflict','429 Too Many Requests')
+          $out=@()
+          foreach($x in $fake){$r=@(Force-DiagnosticScan -Source 'adversarial-sandbox' -Artifact 'fake-error' -Lines @($x) -ExitCode 1 -HttpStatus 0 -Stage 'adversarial');$out+=[pscustomobject]@{input=$x;count=$r.Count;records=@($r)}}
+          $out|ConvertTo-Json -Depth 10|Set-Content "$env:TEMP\adversarial-results.json" -Encoding UTF8
+          Write-Host '=== UPGRADED CHECKER ADVERSARIAL RESULTS ===';$out|ForEach-Object{Write-Host ("count={0} input={1}" -f $_.count,$_.input)}
+          $canon=Join-Path $env:TEMP 'canonical-reporter.ps1'
+          if(Test-Path ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1){Copy-Item ./ultra-mode/OSblocker-1.0.0/ErrorLibrary.ps1 $canon -Force}elseif(Test-Path ./canon/ErrorLibrary.ps1){Copy-Item ./canon/ErrorLibrary.ps1 $canon -Force}else{throw 'Canonical ErrorLibrary.ps1 not present in sandbox checkout'}
+          $sandboxPath=(Resolve-Path ./ultra-mode/ErrorLibrary.ps1).Path
+          $compare=@()
+          foreach($x in $fake){$safe=$x.Replace("'","''");$cp=& powershell -NoProfile -Command ". '$canon';@(Classify-ErrorText -Text '$safe') -join '|'";$sp=& powershell -NoProfile -Command ". '$sandboxPath';@(Classify-ErrorText -Text '$safe') -join '|'";$compare+=[pscustomobject]@{input=$x;canonical=[string]$cp;sandbox=[string]$sp}}
+          $compare|ConvertTo-Json -Depth 5|Set-Content "$env:TEMP\reporter-contract.json" -Encoding UTF8
+          $bad=@($compare|Where-Object canonical -ne sandbox);Write-Host "REPORTER CLASSIFICATION CONTRACT: mismatches=$($bad.Count)";if($bad.Count){$bad|Format-List|Out-String|Write-Host;throw 'Reporter classification diverges from canonical.'};Write-Host 'REPORTER CONTRACT: PASS'
       - name: Browser integration test
         shell: pwsh
         run: |
